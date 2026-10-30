@@ -1,0 +1,14 @@
+{
+  "name": "net-tech-store-backend",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "db:init": "node init_db.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^5.0.0"
+  }
+}
+
