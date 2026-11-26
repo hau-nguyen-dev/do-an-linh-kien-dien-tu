@@ -6,6 +6,8 @@ import { getStorage, setStorage } from './utils/storage.js';
 import { productService } from './services/productService.js';
 import { reviewService } from './services/reviewService.js';
 import { orderService } from './services/orderService.js';
+import { API_BASE_URL } from './services/api.js';
+import { authService } from './services/authService.js';
 import { INITIAL_PRODUCTS } from './data/products.js';
 import { ARTICLES, FAQS } from './data/articles.js';
 
@@ -55,7 +57,7 @@ export function App() {
   const [cart, setCart] = useState(() => getStorage("net_cart", []));
   const [wishlist, setWishlist] = useState(() => getStorage("net_wishlist", []));
   const [orders, setOrders] = useState([]);
-  const [currentUser, setCurrentUser] = useState(() => getStorage("net_user", null));
+  const [currentUser, setCurrentUser] = useState(() => (authService.hasSession() ? getStorage("net_user", null) : null));
   const [isVoucherModalOpen, setIsVoucherModalOpen] = useState(false);
   const [selectedVoucherCode, setSelectedVoucherCode] = useState("");
   const [productReviews, setProductReviews] = useState(() => getStorage("net_custom_reviews", {}));
@@ -70,30 +72,22 @@ export function App() {
         console.warn('[App] Backend offline, hiển thị catalog sản phẩm cục bộ:', err);
       });
 
-    orderService.getOrders()
-      .then((data) => {
-        if (data && data.length > 0) {
-          setOrders(data);
-        }
-      })
-      .catch((err) => console.error('[App] Lỗi tải đơn hàng từ backend:', err));
-
-    fetch('http://localhost:5000/api/banners')
+    fetch(`${API_BASE_URL}/banners`)
       .then((res) => res.json())
       .then((data) => { if (Array.isArray(data)) setBanners(data); })
       .catch((err) => console.error('[App] Lỗi tải banners:', err));
 
-    fetch('http://localhost:5000/api/articles')
+    fetch(`${API_BASE_URL}/articles`)
       .then((res) => res.json())
       .then((data) => { if (Array.isArray(data)) setArticles(data); })
       .catch((err) => console.error('[App] Lỗi tải articles:', err));
 
-    fetch('http://localhost:5000/api/faqs')
+    fetch(`${API_BASE_URL}/faqs`)
       .then((res) => res.json())
       .then((data) => { if (Array.isArray(data)) setFaqs(data); })
       .catch((err) => console.error('[App] Lỗi tải faqs:', err));
 
-    fetch('http://localhost:5000/api/settings')
+    fetch(`${API_BASE_URL}/settings`)
       .then((res) => res.json())
       .then((data) => { if (data) setStoreSettings(data); })
       .catch((err) => console.error('[App] Lỗi tải settings:', err));
@@ -108,11 +102,16 @@ export function App() {
         })
         .catch((err) => console.warn('[App] Auto-refresh products error:', err));
 
-      orderService.getOrders()
-        .then((data) => {
-          if (Array.isArray(data)) setOrders(data);
-        })
-        .catch((err) => console.warn('[App] Auto-refresh orders error:', err));
+      // Chỉ tải đơn của chính khách đang đăng nhập (server không trả toàn bộ đơn cho khách)
+      if (currentUser?.phone) {
+        orderService.getOrders(currentUser.phone)
+          .then((data) => {
+            if (Array.isArray(data)) setOrders(data);
+          })
+          .catch((err) => console.warn('[App] Auto-refresh orders error:', err));
+      } else {
+        setOrders([]);
+      }
     };
 
     refreshData();
@@ -122,28 +121,24 @@ export function App() {
       clearInterval(timer);
       window.removeEventListener('focus', refreshData);
     };
-  }, []);
+  }, [currentUser?.phone]);
 
+  // Trả về đơn do server tạo (mã đơn do server cấp). Lỗi được ném lên để trang thanh toán hiển thị.
   const handleAddOrder = async (newOrder) => {
-    try {
-      const created = await orderService.createOrder({
-        orderId: newOrder.orderId,
-        customerName: newOrder.customer?.fullName || newOrder.customerName || 'Khách vãng lai',
-        phone: newOrder.customer?.phone || newOrder.phone || '',
-        address: newOrder.customer?.address || newOrder.address || '',
-        note: newOrder.customer?.note || newOrder.note || '',
-        paymentMethod: newOrder.paymentMethod,
-        items: newOrder.items,
-        subtotal: newOrder.subtotal,
-        discount: newOrder.discountAmount || 0,
-        total: newOrder.total,
-        status: newOrder.status,
-      });
-      setOrders((prev) => [created || newOrder, ...prev]);
-    } catch (err) {
-      console.error('[App] Lỗi lưu đơn hàng vào backend:', err);
-      setOrders((prev) => [newOrder, ...prev]);
-    }
+    const created = await orderService.createOrder({
+      customerName: newOrder.customer?.fullName || newOrder.customerName || 'Khách vãng lai',
+      phone: newOrder.customer?.phone || newOrder.phone || '',
+      address: newOrder.customer?.address || newOrder.address || '',
+      note: newOrder.customer?.note || newOrder.note || '',
+      paymentMethod: newOrder.paymentMethod,
+      items: newOrder.items,
+      subtotal: newOrder.subtotal,
+      discount: newOrder.discountAmount || 0,
+      total: newOrder.total,
+      status: newOrder.status,
+    });
+    setOrders((prev) => [created, ...prev]);
+    return created;
   };
 
   const handleCancelOrder = (orderId, reason) => {
@@ -182,6 +177,16 @@ export function App() {
   useEffect(() => setStorage("net_wishlist", wishlist), [wishlist]);
   useEffect(() => setStorage("net_orders", orders), [orders]);
   useEffect(() => setStorage("net_user", currentUser), [currentUser]);
+
+  // Token hết hạn hoặc bị server từ chối: đăng xuất để khách đăng nhập lại
+  useEffect(() => {
+    const handleSessionExpired = () => {
+      setCurrentUser(null);
+      showToast("Phiên đăng nhập đã hết hạn, vui lòng đăng nhập lại.", "info");
+    };
+    window.addEventListener('net-auth-expired', handleSessionExpired);
+    return () => window.removeEventListener('net-auth-expired', handleSessionExpired);
+  }, []);
 
   // 3. UI STATE
   const [isCartOpen, setIsCartOpen] = useState(false);
@@ -479,6 +484,7 @@ export function App() {
           showToast(`Chào mừng trở lại, ${userData.name}!`, "success");
         }}
         onLogout={() => {
+          authService.logout();
           setCurrentUser(null);
           showToast("Đã đăng xuất tài khoản", "info");
         }}

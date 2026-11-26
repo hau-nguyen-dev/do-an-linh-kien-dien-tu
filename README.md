@@ -157,6 +157,39 @@ Lệnh trên sẽ tự động đọc lại `schema.sql` và `seed.sql` để l�
 
 ---
 
+## 💳 8. Thanh Toán Chuyển Khoản QR & Đăng Nhập Admin
+
+### Cấu hình lần đầu
+1. Sao chép `backend/.env.example` thành `backend/.env` rồi điền `ADMIN_USERNAME`, `ADMIN_PASSWORD` (≥ 8 ký tự), `ADMIN_TOKEN_SECRET` (chuỗi ngẫu nhiên dài).
+2. Chạy backend (`start_backend.bat`). Lần đầu server tự tạo tài khoản admin từ `.env`.
+3. Mở `frontend/admin.html` (hoặc `http://localhost:5000/admin.html`) → đăng nhập → tab **Thanh toán & QR**, chọn **một trong hai** cách:
+   * **Nhập thủ công:** mã ngân hàng VietQR (`SHB`, `MB`, `VCB`...), số tài khoản, tên chủ tài khoản HOA không dấu. Cửa hàng tự tạo mã QR đã điền sẵn số tiền và nội dung cho từng đơn.
+   * **Tải ảnh mã QR:** chọn ảnh QR chụp từ app ngân hàng (PNG/JPEG/WebP, dưới 1,5MB). Khách quét ảnh này rồi nhập đúng số tiền và nội dung hiển thị bên cạnh.
+   * Quét thử mã xem trước bằng app ngân hàng để chắc đúng chủ tài khoản.
+4. Khi khách chuyển khoản, kiểm tra sao kê ngân hàng rồi bấm **Xác nhận đã nhận tiền** ở mục "Đơn chờ thanh toán". Trang của khách tự chuyển sang "Đã nhận thanh toán".
+5. Đổi mật khẩu admin ngay trong tab (mục 4).
+
+### Kiểm thử
+```bash
+npm test     # chạy tools/test_payment_webhook.mjs trên bản sao CSDL tạm, cần Node ≥ 22.5
+```
+
+### Deploy lên Fly.io
+Cần cài `flyctl` (<https://fly.io/docs/flyctl/install/>) và có tài khoản Fly.io. `backend/seed.sqlite` là CSDL mẫu sạch (không có dữ liệu khách); lần chạy đầu server tự dựng CSDL thật từ file này vào volume `/data`.
+```bash
+fly auth login
+fly apps create net-tech-store-hue          # tên app phải duy nhất, nếu trùng thì đổi cả trong fly.toml
+fly volumes create net_data --region sin --size 1
+fly secrets set ADMIN_USERNAME=admin ADMIN_PASSWORD='<mật khẩu admin>'     ADMIN_TOKEN_SECRET="$(node -e "console.log(require('crypto').randomBytes(32).toString('hex'))")"
+fly deploy --ha=false                        # chỉ 1 máy vì SQLite gắn với 1 volume
+```
+* Sau khi deploy: mở `https://<tên-app>.fly.dev/admin.html`, đăng nhập và nhập tài khoản ngân hàng hoặc tải ảnh QR ở tab **Thanh toán & QR**.
+* Biến môi trường (`NODE_ENV`, `TRUST_PROXY`, `DB_PATH`) đã khai báo sẵn trong `fly.toml`; **không** commit `.env` hay `database.sqlite`.
+* Sao lưu CSDL: `fly ssh sftp get /data/database.sqlite` hoặc `fly volumes snapshots list`.
+* Server tự kiểm tra lại giá sản phẩm và tổng tiền khi tạo đơn, nên khách không thể tự đặt giá thấp.
+
+---
+
 ## 👥 7. Phân Công Nhiệm Vụ 4 Thành Viên (Lớp KHD5)
 | STT | Thành viên | Vai trò | Phân hệ phụ trách chính |
 | :---: | :--- | :---: | :--- |

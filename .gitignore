@@ -13,6 +13,10 @@ dist/
 build/
 .cache/
 
+# Database: CSDL thật chứa dữ liệu khách hàng nên không commit; seed.sqlite là bản mẫu sạch (không có dữ liệu cá nhân)
+*.sqlite
+!backend/seed.sqlite
+
 # Database backups & journal files
 *.sqlite.bak
 *.sqlite-journal

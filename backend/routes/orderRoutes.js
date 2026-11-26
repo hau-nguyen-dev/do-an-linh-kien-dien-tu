@@ -1,12 +1,41 @@
+import crypto from 'node:crypto';
 import { Router } from 'express';
-import { db, formatOrder } from '../config/db.js';
+import { db, formatOrder, safeJsonParse } from '../config/db.js';
+import { getAdminSession, getCustomerSession } from '../middleware/adminAuth.js';
 
 const router = Router();
 
-// GET /api/orders
+const ORDER_ID_PREFIX = 'NET';
+const ORDER_ID_DIGITS = 8;
+const MAX_ID_ATTEMPTS = 20;
+const MAX_SHIPPING_FEE = 100000;
+const MAX_ITEM_QUANTITY = 100;
+const AWAITING_QR_STATUS = 'Chờ thanh toán VietQR';
+const DEFAULT_STATUS = 'Chờ xác nhận';
+
+// Mã đơn do server cấp: tiền tố + chữ số ngẫu nhiên an toàn, đảm bảo không trùng.
+function generateUniqueOrderId() {
+  for (let i = 0; i < MAX_ID_ATTEMPTS; i += 1) {
+    const candidate = ORDER_ID_PREFIX + crypto.randomInt(10 ** (ORDER_ID_DIGITS - 1), 10 ** ORDER_ID_DIGITS);
+    const taken = db.prepare('SELECT 1 FROM don_hang WHERE ma_don_hang = ? OR ma_don_hang = ?').get(candidate, '#' + candidate);
+    if (!taken) return candidate;
+  }
+  throw new Error('Không tạo được mã đơn hàng duy nhất');
+}
+
+// GET /api/orders - khách tra theo số điện thoại; xem toàn bộ đơn cần đăng nhập admin
 router.get('/', (req, res) => {
   const { phone, customerPhone } = req.query;
   const targetPhone = phone || customerPhone;
+
+  const isAdmin = Boolean(getAdminSession(req));
+  if (!targetPhone && !isAdmin) {
+    return res.json([]);
+  }
+  // Khách chỉ xem được đơn của chính số điện thoại đã đăng nhập
+  if (targetPhone && !isAdmin && getCustomerSession(req)?.sub !== String(targetPhone)) {
+    return res.status(401).json({ message: 'Vui lòng đăng nhập để xem đơn hàng.' });
+  }
 
   let rows;
   if (targetPhone) {
@@ -17,12 +46,58 @@ router.get('/', (req, res) => {
   res.json(rows.map(formatOrder));
 });
 
-// GET /api/orders/:id
+// Giá thấp nhất hợp lệ của một sản phẩm (giá gốc, giá biến thể, chênh lệch âm của nhóm phân loại)
+function lowestValidUnitPrice(product) {
+  const prices = [Number(product.gia_ban)];
+  for (const variant of safeJsonParse(product.bien_the, [])) {
+    if (Number.isFinite(Number(variant?.price))) prices.push(Number(variant.price));
+  }
+  let negativeDiff = 0;
+  for (const group of safeJsonParse(product.nhom_phan_loai, [])) {
+    const diffs = (group?.options || []).map((o) => Number(o?.priceDiff) || 0);
+    negativeDiff += Math.min(0, ...diffs);
+  }
+  return Math.min(...prices.filter(Number.isFinite)) + negativeDiff;
+}
+
+// Tính lại tạm tính từ giá trong CSDL; trả về { error } nếu giỏ hàng không hợp lệ
+function priceItemsFromDb(items) {
+  if (!Array.isArray(items) || items.length === 0) return { error: 'Giỏ hàng trống hoặc không hợp lệ.' };
+  let subtotal = 0;
+  for (const item of items) {
+    const quantity = Number(item?.quantity ?? item?.qty);
+    const unitPrice = Number(item?.price);
+    if (!Number.isInteger(quantity) || quantity < 1 || quantity > MAX_ITEM_QUANTITY || !Number.isFinite(unitPrice)) {
+      return { error: 'Số lượng hoặc đơn giá sản phẩm không hợp lệ.' };
+    }
+    const product = db.prepare('SELECT gia_ban, bien_the, nhom_phan_loai FROM san_pham WHERE id = ?').get(String(item.id));
+    if (!product) return { error: `Sản phẩm "${item?.name || item?.id}" không còn tồn tại.` };
+    if (unitPrice < lowestValidUnitPrice(product)) {
+      return { error: `Đơn giá của "${item?.name || item?.id}" không khớp bảng giá. Vui lòng tải lại trang.` };
+    }
+    subtotal += unitPrice * quantity;
+  }
+  return { subtotal };
+}
+
+// Mức giảm tối đa của voucher lên tiền hàng (voucher freeship chỉ giảm phí vận chuyển)
+function maxProductDiscount(code, subtotal) {
+  if (!code) return 0;
+  const voucher = db.prepare('SELECT * FROM ma_giam_gia WHERE UPPER(ma_voucher) = ?').get(code);
+  if (!voucher || subtotal < (Number(voucher.don_toi_thieu) || 0)) return 0;
+  const value = Number(voucher.gia_tri_giam) || 0;
+  if (voucher.loai_giam_gia === 'percent') return Math.round((subtotal * value) / 100);
+  if (voucher.loai_giam_gia === 'shipping') return 0;
+  return value;
+}
+
+// GET /api/orders/:id - admin, hoặc khách đã đăng nhập và là chủ đơn
 router.get('/:id', (req, res) => {
   const rawId = req.params.id;
   const cleanId = rawId.replace(/^#/, '');
   const row = db.prepare('SELECT * FROM don_hang WHERE ma_don_hang = ? OR ma_don_hang = ?').get(cleanId, '#' + cleanId);
-  if (!row) {
+  const isOwner = row && getCustomerSession(req)?.sub === row.so_dien_thoai;
+  if (!row || (!isOwner && !getAdminSession(req))) {
     return res.status(404).json({ message: 'Không tìm thấy đơn hàng' });
   }
   res.json(formatOrder(row));
@@ -31,15 +106,16 @@ router.get('/:id', (req, res) => {
 // POST /api/orders
 router.post('/', (req, res) => {
   const ord = req.body;
-  const targetPhone = String(ord.phone || ord.soDienThoai || '').trim();
 
-  // 1. CHẶN KHÁCH VÃNG LAI & ĐƠN RÁC: Bắt buộc phải có số điện thoại
-  if (!targetPhone) {
+  // 1. CHẶN KHÁCH VÃNG LAI & ĐƠN RÁC: phải đăng nhập, và đơn luôn gắn với số điện thoại của phiên đăng nhập
+  const session = getCustomerSession(req);
+  if (!session) {
     return res.status(401).json({
       success: false,
       message: 'Vui lòng đăng nhập hoặc tạo tài khoản để đặt hàng. Đơn hàng từ khách chưa đăng ký bị chặn để tránh đơn rác/spam.'
     });
   }
+  const targetPhone = session.sub;
 
   // 2. XÁC MINH TÀI KHOẢN: Phải tồn tại trong cơ sở dữ liệu nguoi_dung
   const user = db.prepare('SELECT * FROM nguoi_dung WHERE so_dien_thoai = ?').get(targetPhone);
@@ -66,8 +142,20 @@ router.post('/', (req, res) => {
     // Không chặn nếu sqlite datetime syntax gặp lỗi múi giờ cục bộ
   }
 
-  let id = ord.orderId || ord.maDonHang || ('NET' + Math.floor(10000 + Math.random() * 90000));
-  id = id.replace(/^#/, '');
+  const voucherCode = String(ord.voucherCode || ord.maVoucher || '').toUpperCase().trim();
+  const priced = priceItemsFromDb(ord.items || ord.danhSachSanPham);
+  if (priced.error) {
+    return res.status(400).json({ success: false, message: priced.error });
+  }
+  const { subtotal } = priced;
+  const productDiscount = maxProductDiscount(voucherCode, subtotal);
+  const clientTotal = Number(ord.total ?? ord.tongTien);
+  const lowestTotal = Math.max(0, subtotal - productDiscount);
+  if (!Number.isFinite(clientTotal) || clientTotal < lowestTotal || clientTotal > subtotal + MAX_SHIPPING_FEE) {
+    return res.status(400).json({ success: false, message: 'Tổng tiền đơn hàng không khớp giá hiện tại. Vui lòng tải lại trang và thử lại.' });
+  }
+
+  const id = generateUniqueOrderId();
 
   const methodMap = {
     cod: 'Thanh toán khi nhận hàng (COD)',
@@ -76,9 +164,8 @@ router.post('/', (req, res) => {
     momo: 'Ví MoMo',
   };
   const paymentMethod = methodMap[ord.paymentMethod] || methodMap[ord.phuongThucThanhToan] || ord.paymentMethod || ord.phuongThucThanhToan || 'Thanh toán khi nhận hàng (COD)';
-  const status = ord.paymentMethod === 'vietqr' ? 'Chờ thanh toán VietQR' : (ord.status || ord.trangThai || 'Chờ xác nhận');
-
-  const voucherCode = (ord.voucherCode || ord.maVoucher || '').toUpperCase().trim();
+  // Trạng thái ban đầu do server quyết định, không tin dữ liệu khách gửi
+  const status = ord.paymentMethod === 'vietqr' ? AWAITING_QR_STATUS : DEFAULT_STATUS;
   const customerName = user.ho_ten || ord.customerName || ord.tenKhachHang || 'Hội viên Nét.';
 
   const insertSql = `
@@ -96,9 +183,9 @@ router.post('/', (req, res) => {
     ord.note || ord.ghiChu || '',
     paymentMethod,
     JSON.stringify(ord.items || ord.danhSachSanPham || []),
-    ord.subtotal || ord.tamTinh || ord.total || 0,
-    ord.discount || ord.tienGiam || 0,
-    ord.total || ord.tongTien || 0,
+    subtotal,
+    productDiscount,
+    clientTotal,
     status,
     voucherCode,
     user.id

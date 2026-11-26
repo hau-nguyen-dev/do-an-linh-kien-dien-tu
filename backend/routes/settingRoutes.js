@@ -3,6 +3,8 @@ import { db, safeJsonParse } from '../config/db.js';
 
 const router = Router();
 
+const PROTECTED_SETTING_KEYS = new Set(['bank_id', 'bank_account_no', 'bank_account_name', 'payment_qr_image']);
+
 // GET /api/categories
 router.get('/categories', (req, res) => {
   const rows = db.prepare('SELECT * FROM danh_muc').all();
@@ -134,6 +136,7 @@ router.get('/settings', (req, res) => {
   const rows = db.prepare('SELECT * FROM cai_dat_cua_hang').all();
   const settings = {};
   for (const row of rows) {
+    if (row.khoa === 'payment_qr_image') continue; // ảnh lớn, lấy qua /api/payment/qr-image
     if (row.khoa === 'showrooms' || row.khoa === 'usps') {
       settings[row.khoa] = safeJsonParse(row.gia_tri, []);
     } else {
@@ -148,6 +151,8 @@ router.put('/settings', (req, res) => {
   const payload = req.body;
   const stmt = db.prepare('INSERT OR REPLACE INTO cai_dat_cua_hang (khoa, gia_tri) VALUES (?, ?)');
   for (const [k, v] of Object.entries(payload)) {
+    // Cấu hình thanh toán chỉ được đổi qua PUT /api/payment/config (có kiểm tra dữ liệu)
+    if (PROTECTED_SETTING_KEYS.has(k)) continue;
     const valStr = typeof v === 'object' ? JSON.stringify(v) : String(v);
     stmt.run(k, valStr);
   }

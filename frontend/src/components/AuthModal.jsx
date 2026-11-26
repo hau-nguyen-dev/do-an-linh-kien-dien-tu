@@ -1,23 +1,41 @@
 import React, { useState } from 'react';
 import Icon from './Icon.jsx';
+import { authService } from '../services/authService.js';
+
+const INPUT_CLASS = "w-full p-2.5 border border-[#E5E8EC] rounded-xl focus:border-[#0275A9] focus:outline-none";
 
 export function AuthModal({ isOpen, currentUser, onLogin, onLogout, onClose, onNavigateOrders }) {
-  if (!isOpen) return null;
-
   const [authTab, setAuthTab] = useState("login");
   const [name, setName] = useState("");
   const [phone, setPhone] = useState("");
   const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
 
-  const handleLoginSubmit = (e) => {
+  if (!isOpen) return null;
+
+  const switchTab = (tab) => {
+    setAuthTab(tab);
+    setError("");
+  };
+
+  const handleSubmit = async (e) => {
     e.preventDefault();
-    if (!phone.trim()) return;
-    onLogin({
-      name: name.trim() || "Khách hàng nét.",
-      phone: phone.trim(),
-      email: email.trim() || `${phone.trim()}@net.vn`,
-      tier: "Hội viên Silver",
-    });
+    if (loading) return;
+    setError("");
+    setLoading(true);
+    try {
+      const user = authTab === "login"
+        ? await authService.login(phone.trim(), password)
+        : await authService.register({ fullName: name.trim(), phone: phone.trim(), email: email.trim(), password });
+      setPassword("");
+      onLogin(user);
+    } catch (err) {
+      setError(err.message || "Không thể kết nối máy chủ. Vui lòng thử lại.");
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
@@ -63,7 +81,7 @@ export function AuthModal({ isOpen, currentUser, onLogin, onLogout, onClose, onN
           <div className="space-y-4">
             <div className="flex border-b border-[#E5E8EC]">
               <button
-                onClick={() => setAuthTab("login")}
+                onClick={() => switchTab("login")}
                 className={`flex-1 py-2 text-xs font-bold transition border-b-2 ${
                   authTab === "login"
                     ? "border-[#0275A9] text-[#0275A9]"
@@ -73,7 +91,7 @@ export function AuthModal({ isOpen, currentUser, onLogin, onLogout, onClose, onN
                 Đăng nhập
               </button>
               <button
-                onClick={() => setAuthTab("register")}
+                onClick={() => switchTab("register")}
                 className={`flex-1 py-2 text-xs font-bold transition border-b-2 ${
                   authTab === "register"
                     ? "border-[#0275A9] text-[#0275A9]"
@@ -84,7 +102,7 @@ export function AuthModal({ isOpen, currentUser, onLogin, onLogout, onClose, onN
               </button>
             </div>
 
-            <form onSubmit={handleLoginSubmit} className="space-y-3 text-xs">
+            <form onSubmit={handleSubmit} className="space-y-3 text-xs">
               {authTab === "register" && (
                 <div>
                   <label className="block text-[#707783] mb-1 font-medium">Họ và tên</label>
@@ -94,7 +112,7 @@ export function AuthModal({ isOpen, currentUser, onLogin, onLogout, onClose, onN
                     value={name}
                     onChange={(e) => setName(e.target.value)}
                     placeholder="Nguyễn Văn A"
-                    className="w-full p-2.5 border border-[#E5E8EC] rounded-xl focus:border-[#0275A9] focus:outline-none"
+                    className={INPUT_CLASS}
                   />
                 </div>
               )}
@@ -103,10 +121,11 @@ export function AuthModal({ isOpen, currentUser, onLogin, onLogout, onClose, onN
                 <input
                   type="tel"
                   required
+                  autoComplete="tel"
                   value={phone}
                   onChange={(e) => setPhone(e.target.value)}
                   placeholder="0912 345 678"
-                  className="w-full p-2.5 border border-[#E5E8EC] rounded-xl focus:border-[#0275A9] focus:outline-none"
+                  className={INPUT_CLASS}
                 />
               </div>
               {authTab === "register" && (
@@ -117,15 +136,35 @@ export function AuthModal({ isOpen, currentUser, onLogin, onLogout, onClose, onN
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
                     placeholder="email@example.com"
-                    className="w-full p-2.5 border border-[#E5E8EC] rounded-xl focus:border-[#0275A9] focus:outline-none"
+                    className={INPUT_CLASS}
                   />
                 </div>
               )}
+              <div>
+                <label className="block text-[#707783] mb-1 font-medium">
+                  Mật khẩu{authTab === "register" ? " (từ 8 ký tự)" : ""}
+                </label>
+                <input
+                  type="password"
+                  required
+                  minLength={authTab === "register" ? 8 : undefined}
+                  autoComplete={authTab === "login" ? "current-password" : "new-password"}
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  className={INPUT_CLASS}
+                />
+              </div>
+              {error && (
+                <div className="text-rose-600 bg-rose-50 border border-rose-200 rounded-lg px-3 py-2">{error}</div>
+              )}
               <button
                 type="submit"
-                className="w-full py-2.5 bg-[#0275A9] hover:bg-[#02628e] text-white font-bold rounded-xl transition shadow-card mt-2"
+                disabled={loading}
+                className="w-full py-2.5 bg-[#0275A9] hover:bg-[#02628e] disabled:opacity-60 text-white font-bold rounded-xl transition shadow-card mt-2"
               >
-                {authTab === "login" ? "Đăng nhập ngay" : "Tạo tài khoản thành viên"}
+                {loading
+                  ? "Đang xử lý..."
+                  : authTab === "login" ? "Đăng nhập ngay" : "Tạo tài khoản thành viên"}
               </button>
             </form>
           </div>

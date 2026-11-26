@@ -3,7 +3,11 @@
   "private": true,
   "version": "1.0.0",
   "type": "module",
+  "engines": {
+    "node": ">=22.5.0"
+  },
   "scripts": {
+    "test": "node tools/test_payment_webhook.mjs",
     "dev": "vite frontend",
     "server": "node backend/server.js",
     "backend": "node backend/server.js",

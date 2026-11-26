@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import Icon from '../components/Icon.jsx';
 import { ReviewFormModal } from '../components/ReviewFormModal.jsx';
 import { formatVND } from '../utils/formatters.js';
+import { API_BASE_URL } from '../services/api.js';
 
 // =========================================================================
 // MODAL: TÍNH TOÁN TRẢ GÓP 0% LÃI SUẤT THỰC TẾ
@@ -240,13 +241,13 @@ export function ProductDetailPage({ products = [], productId, onAddToCart, onTog
     setQuantity(1);
 
     if (product?.id) {
-      fetch(`http://localhost:5000/api/comments?productId=${product.id}&status=approved`)
+      fetch(`${API_BASE_URL}/comments?productId=${product.id}&status=approved`)
         .then((res) => res.json())
         .then((data) => { if (Array.isArray(data)) setComments(data); })
         .catch((err) => console.warn("[PDP] Comments fetch error:", err));
     }
     if (!settingsData) {
-      fetch('http://localhost:5000/api/settings')
+      fetch(`${API_BASE_URL}/settings`)
         .then((res) => res.json())
         .then((data) => { if (data) setSettingsData(data); })
         .catch((err) => console.warn("[PDP] Settings fetch error:", err));
@@ -261,7 +262,7 @@ export function ProductDetailPage({ products = [], productId, onAddToCart, onTog
     }
     setIsSubmittingComment(true);
     try {
-      const res = await fetch("http://localhost:5000/api/comments", {
+      const res = await fetch(`${API_BASE_URL}/comments`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

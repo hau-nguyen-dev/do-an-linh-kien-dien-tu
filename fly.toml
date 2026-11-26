@@ -1,0 +1,35 @@
+# Cấu hình Fly.io. Tên app phải là duy nhất trên toàn Fly.io; đổi nếu bị trùng.
+app = "net-tech-store-hue"
+primary_region = "sin" # Singapore - gần Việt Nam nhất
+
+[build]
+
+[env]
+  PORT = "8080"
+  NODE_ENV = "production"
+  TRUST_PROXY = "1"
+  # SQLite nằm trên volume bền vững, không mất khi deploy lại
+  DB_PATH = "/data/database.sqlite"
+
+[[mounts]]
+  source = "net_data"
+  destination = "/data"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  # Luôn giữ 1 máy chạy để phản hồi nhanh và giữ bộ đếm đăng nhập sai trong bộ nhớ
+  auto_stop_machines = "off"
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [[http_service.checks]]
+    method = "GET"
+    path = "/api/health"
+    interval = "30s"
+    timeout = "5s"
+    grace_period = "10s"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"
