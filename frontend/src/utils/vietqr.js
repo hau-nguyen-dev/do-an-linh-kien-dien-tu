@@ -1,14 +1,13 @@
 /**
- * Tạo URL ảnh mã VietQR thanh toán ngân hàng chuẩn Napas 247
+ * Tạo URL ảnh mã VietQR thanh toán ngân hàng chuẩn Napas 247.
+ * Thông tin tài khoản lấy từ cấu hình của cửa hàng (admin quản lý), không có giá trị mặc định giả.
  */
-export function generateVietQRUrl({
-  bankId = 'MB',
-  accountNo = '0901234567',
-  accountName = 'NET STORE VN',
-  amount = 0,
-  memo = ''
-}) {
-  const encodedName = encodeURIComponent(accountName);
-  const encodedMemo = encodeURIComponent(memo || 'THANH TOAN DON HANG NET');
-  return `https://img.vietqr.io/image/${bankId}-${accountNo}-compact2.png?amount=${amount}&addInfo=${encodedMemo}&accountName=${encodedName}`;
+export function generateVietQRUrl({ bankId, accountNo, accountName, amount = 0, memo = '' }) {
+  if (!bankId || !accountNo) return '';
+  const params = new URLSearchParams({
+    amount: String(Math.round(Number(amount) || 0)),
+    addInfo: memo,
+    accountName: accountName || '',
+  });
+  return `https://img.vietqr.io/image/${encodeURIComponent(bankId)}-${encodeURIComponent(accountNo)}-compact2.png?${params.toString()}`;
 }

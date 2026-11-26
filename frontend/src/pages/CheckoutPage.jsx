@@ -1,7 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import Icon from '../components/Icon.jsx';
-import { formatVND, generateOrderId } from '../utils/formatters.js';
-import { generateVietQRUrl } from '../utils/vietqr.js';
+import { formatVND } from '../utils/formatters.js';
 import { applyCoupon } from '../utils/coupon.js';
 import { voucherService } from '../services/voucherService.js';
 
@@ -19,6 +18,7 @@ export function CheckoutPage({ cart, cartSubtotal, onClearCart, onNavigate, curr
   });
 
   const [errors, setErrors] = useState({});
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const [couponInput, setCouponInput] = useState(selectedVoucherCode || "");
   const [appliedVoucher, setAppliedVoucher] = useState(null);
   const [discountAmount, setDiscountAmount] = useState(0);
@@ -97,8 +97,9 @@ export function CheckoutPage({ cart, cartSubtotal, onClearCart, onNavigate, curr
     }
   };
 
-  const handleSubmitOrder = (e) => {
+  const handleSubmitOrder = async (e) => {
     e.preventDefault();
+    if (isSubmitting) return;
     const e1 = validateField("fullName", formData.fullName);
     const e2 = validateField("phone", formData.phone);
     const e3 = validateField("email", formData.email);
@@ -114,9 +115,7 @@ export function CheckoutPage({ cart, cartSubtotal, onClearCart, onNavigate, curr
       return;
     }
 
-    const orderId = generateOrderId();
     const newOrder = {
-      orderId,
       date: new Date().toLocaleDateString("vi-VN"),
       time: new Date().toLocaleTimeString("vi-VN"),
       customer: { ...formData },
@@ -129,9 +128,17 @@ export function CheckoutPage({ cart, cartSubtotal, onClearCart, onNavigate, curr
       status: "Chờ xác nhận",
     };
 
-    onAddOrder(newOrder);
-    onClearCart();
-    onNavigate(`#/order-success/${orderId}`);
+    setIsSubmitting(true);
+    try {
+      // Mã đơn do server cấp nên phải chờ server trả về trước khi chuyển trang
+      const created = await onAddOrder(newOrder);
+      onClearCart();
+      onNavigate(`#/order-success/${created.orderId}`);
+    } catch (err) {
+      onShowToast(err.message || "Không thể tạo đơn hàng. Vui lòng thử lại!", "info");
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   if (cart.length === 0) {
@@ -443,9 +450,10 @@ export function CheckoutPage({ cart, cartSubtotal, onClearCart, onNavigate, curr
             {/* Place Order Button */}
             <button
               type="submit"
-              className="w-full py-4 bg-[#0275A9] hover:bg-[#02628e] text-white font-bold text-xs uppercase tracking-wider rounded-xl transition shadow-md active:scale-98 cursor-pointer mt-4"
+              disabled={isSubmitting}
+              className="w-full py-4 bg-[#0275A9] hover:bg-[#02628e] disabled:opacity-60 disabled:cursor-wait text-white font-bold text-xs uppercase tracking-wider rounded-xl transition shadow-md active:scale-98 cursor-pointer mt-4"
             >
-              Xác nhận đặt hàng ngay
+              {isSubmitting ? "Đang tạo đơn hàng..." : "Xác nhận đặt hàng ngay"}
             </button>
             <p className="text-[11px] text-center text-[#707783]">
               Bằng cách đặt hàng, bạn đồng ý với Điều khoản mua sắm của nét.

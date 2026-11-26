@@ -1,0 +1,23 @@
+# Không đưa dữ liệu thật, bí mật hay file nặng vào image
+.git
+.gitignore
+**/node_modules
+backend/.env
+backend/database.sqlite
+backend/*.sqlite-*
+*.sqlite.bak
+.env
+.env.*
+!backend/.env.example
+
+# Tài liệu, công cụ và báo cáo không cần khi chạy
+docs
+tools
+*.docx
+*.pptx
+*.xlsx
+*.bat
+*.md
+Dockerfile
+.dockerignore
+fly.toml

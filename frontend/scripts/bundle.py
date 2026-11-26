@@ -68,6 +68,8 @@ def generate_bundle():
     services_order = read_src('services/orderService.js')
     services_voucher = read_src('services/voucherService.js')
     services_review = read_src('services/reviewService.js')
+    services_payment = read_src('services/paymentService.js')
+    services_auth = read_src('services/authService.js')
 
     comp_icon = read_src('components/Icon.jsx')
     comp_header = read_src('components/Header.jsx')
@@ -77,6 +79,7 @@ def generate_bundle():
     comp_quickview = read_src('components/QuickViewModal.jsx')
     comp_card = read_src('components/ProductCard.jsx')
     comp_voucher = read_src('components/VoucherModal.jsx')
+    comp_payment_qr = read_src('components/PaymentQrBox.jsx')
     comp_order_detail = read_src('components/OrderDetailModal.jsx')
     comp_review = read_src('components/ReviewFormModal.jsx')
     comp_auth = read_src('components/AuthModal.jsx')
@@ -192,6 +195,8 @@ const {{ useState, useEffect, useMemo, useRef }} = React;
 {services_product}
 
 {services_order}
+{services_payment}
+{services_auth}
 
 {services_voucher}
 
@@ -216,6 +221,7 @@ const {{ useState, useEffect, useMemo, useRef }} = React;
 
 {comp_voucher}
 
+{comp_payment_qr}
 {comp_order_detail}
 
 {comp_review}

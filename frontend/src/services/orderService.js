@@ -9,11 +9,11 @@ const ORDERS_STORAGE_KEY = 'net_orders';
 
 export const orderService = {
   /**
-   * Get all customer orders
+   * Get customer orders (theo số điện thoại; không truyền phone thì server chỉ trả đơn cho admin)
    */
-  async getOrders() {
+  async getOrders(phone) {
     if (API_CONFIG.USE_BACKEND_API) {
-      return await apiClient('/orders');
+      return await apiClient(phone ? `/orders?phone=${encodeURIComponent(phone)}` : '/orders');
     }
     return Promise.resolve(getStorage(ORDERS_STORAGE_KEY, []));
   },

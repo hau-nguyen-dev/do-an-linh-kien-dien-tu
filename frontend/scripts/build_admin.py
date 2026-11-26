@@ -297,6 +297,21 @@ function Icon({ name, className = "w-5 h-5", size = 20 }) {
         <polyline points="17 8 12 3 7 8" />
         <line x1="12" y1="3" x2="12" y2="15" />
       </>
+    ),
+    "qr-code": (
+      <>
+        <rect x="3" y="3" width="7" height="7" />
+        <rect x="14" y="3" width="7" height="7" />
+        <rect x="3" y="14" width="7" height="7" />
+        <path d="M14 14h3v3h-3zM20 14v3M14 20h3M20 20h1" />
+      </>
+    ),
+    "log-out": (
+      <>
+        <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+        <polyline points="16 17 21 12 16 7" />
+        <line x1="21" y1="12" x2="9" y2="12" />
+      </>
     )
   };
 
@@ -2379,7 +2394,376 @@ function ProductFormModal({ product, onClose, onSave, categories, presetImages }
   );
 }
 
-function AdminApp() {
+// =========================================================================
+// XÁC THỰC ADMIN: đăng nhập, token phiên, gọi API kèm Authorization
+// =========================================================================
+const ADMIN_TOKEN_KEY = "net_admin_token";
+const ADMIN_API_BASE = (location.protocol.startsWith("http") && location.port !== "5173")
+  ? location.origin + "/api"
+  : "http://" + (location.hostname || "localhost") + ":5000/api";
+
+function adminFetch(url, options = {}) {
+  const token = sessionStorage.getItem(ADMIN_TOKEN_KEY);
+  const headers = { ...(options.headers || {}) };
+  if (token) headers.Authorization = "Bearer " + token;
+  return fetch(url, { ...options, headers }).then((res) => {
+    if (res.status === 401) {
+      sessionStorage.removeItem(ADMIN_TOKEN_KEY);
+      window.dispatchEvent(new Event("net-admin-unauthorized"));
+    }
+    return res;
+  });
+}
+
+function AdminLogin({ onLoggedIn }) {
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setError("");
+    setLoading(true);
+    try {
+      const res = await fetch(ADMIN_API_BASE + "/admin/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username, password }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.token) {
+        setError(data.message || "Đăng nhập thất bại. Vui lòng thử lại.");
+        return;
+      }
+      sessionStorage.setItem(ADMIN_TOKEN_KEY, data.token);
+      onLoggedIn();
+    } catch (err) {
+      setError("Không kết nối được máy chủ. Hãy kiểm tra backend đã chạy chưa.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-[#F5F6F8] px-4">
+      <form onSubmit={handleSubmit} className="w-full max-w-sm bg-white rounded-2xl border border-[#E5E8EC] shadow-sm p-8 space-y-5">
+        <div className="text-center space-y-1">
+          <div className="text-3xl font-black text-[#0275A9]">nét.</div>
+          <h1 className="text-sm font-extrabold text-[#141923]">Đăng nhập Quản trị</h1>
+          <p className="text-xs text-[#707783]">Chỉ dành cho quản trị viên cửa hàng</p>
+        </div>
+        <div>
+          <label className="text-xs font-bold text-[#141923] block mb-1">Tên đăng nhập</label>
+          <input
+            type="text"
+            autoComplete="username"
+            value={username}
+            onChange={(e) => setUsername(e.target.value)}
+            className="w-full px-3 py-2.5 border border-[#CBD5E1] rounded-xl text-sm focus:outline-none focus:border-[#0275A9]"
+          />
+        </div>
+        <div>
+          <label className="text-xs font-bold text-[#141923] block mb-1">Mật khẩu</label>
+          <input
+            type="password"
+            autoComplete="current-password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            className="w-full px-3 py-2.5 border border-[#CBD5E1] rounded-xl text-sm focus:outline-none focus:border-[#0275A9]"
+          />
+        </div>
+        {error && <div className="text-xs text-rose-600 bg-rose-50 border border-rose-200 rounded-lg px-3 py-2">{error}</div>}
+        <button
+          type="submit"
+          disabled={loading || !username || !password}
+          className="w-full py-3 bg-[#0275A9] hover:bg-[#02628e] disabled:opacity-60 text-white text-xs font-bold rounded-xl transition cursor-pointer"
+        >
+          {loading ? "Đang đăng nhập..." : "Đăng nhập"}
+        </button>
+      </form>
+    </div>
+  );
+}
+
+function AdminGate() {
+  const [authState, setAuthState] = useState("checking"); // "checking" | "loggedOut" | "loggedIn"
+
+  useEffect(() => {
+    const onUnauthorized = () => setAuthState("loggedOut");
+    window.addEventListener("net-admin-unauthorized", onUnauthorized);
+    if (!sessionStorage.getItem(ADMIN_TOKEN_KEY)) {
+      setAuthState("loggedOut");
+    } else {
+      adminFetch(ADMIN_API_BASE + "/admin/me")
+        .then((res) => setAuthState(res.ok ? "loggedIn" : "loggedOut"))
+        .catch(() => setAuthState("loggedOut"));
+    }
+    return () => window.removeEventListener("net-admin-unauthorized", onUnauthorized);
+  }, []);
+
+  const handleLogout = () => {
+    sessionStorage.removeItem(ADMIN_TOKEN_KEY);
+    setAuthState("loggedOut");
+  };
+
+  if (authState === "checking") {
+    return <div className="min-h-screen flex items-center justify-center text-xs text-[#707783]">Đang kiểm tra phiên đăng nhập...</div>;
+  }
+  if (authState === "loggedOut") {
+    return <AdminLogin onLoggedIn={() => setAuthState("loggedIn")} />;
+  }
+  return <AdminApp onLogout={handleLogout} />;
+}
+
+// =========================================================================
+// TAB THANH TOÁN & MÃ QR: nhập tài khoản thủ công hoặc tải ảnh mã QR, xác nhận đã nhận tiền
+// =========================================================================
+const BANK_SUGGESTIONS = ["MB", "VCB", "TCB", "ACB", "BIDV", "VPB", "TPB", "CTG", "STB", "SHB", "OCB", "MSB", "VIB", "HDB", "EIB", "LPB", "AGRIBANK", "SCB"];
+const MAX_QR_UPLOAD_BYTES = 1.5 * 1024 * 1024;
+
+function PaymentsPanel({ orders, onOrdersChanged }) {
+  const [form, setForm] = useState({ bankId: "", accountNo: "", accountName: "" });
+  const [qrState, setQrState] = useState({ hasQrImage: false, qrImageVersion: "" });
+  const [message, setMessage] = useState(null);
+  const [qrMessage, setQrMessage] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const [pwForm, setPwForm] = useState({ currentPassword: "", newPassword: "" });
+  const [pwMessage, setPwMessage] = useState(null);
+
+  const applyConfig = (c) => {
+    setForm({ bankId: c.bankId || "", accountNo: c.accountNo || "", accountName: c.accountName || "" });
+    setQrState({ hasQrImage: Boolean(c.hasQrImage), qrImageVersion: c.qrImageVersion || "" });
+  };
+
+  useEffect(() => {
+    adminFetch(ADMIN_API_BASE + "/payment/config")
+      .then((res) => res.json())
+      .then(applyConfig)
+      .catch((err) => console.warn("[Admin] Không tải được cấu hình thanh toán:", err));
+  }, []);
+
+  const updateField = (field, value) => setForm((prev) => ({ ...prev, [field]: value }));
+
+  const handleSave = async (e) => {
+    e.preventDefault();
+    setSaving(true);
+    setMessage(null);
+    try {
+      const res = await adminFetch(ADMIN_API_BASE + "/payment/config", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(form),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setMessage({ type: "error", text: data.message || "Lưu cấu hình thất bại." });
+        return;
+      }
+      applyConfig(data.config);
+      setMessage({ type: "ok", text: "Đã lưu tài khoản nhận tiền. Mã QR trên cửa hàng cập nhật ngay." });
+    } catch (err) {
+      setMessage({ type: "error", text: "Không kết nối được máy chủ." });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleQrFile = (e) => {
+    const file = e.target.files && e.target.files[0];
+    e.target.value = "";
+    if (!file) return;
+    setQrMessage(null);
+    if (!["image/png", "image/jpeg", "image/webp"].includes(file.type)) {
+      setQrMessage({ type: "error", text: "Chỉ nhận ảnh PNG, JPEG hoặc WebP." });
+      return;
+    }
+    if (file.size > MAX_QR_UPLOAD_BYTES) {
+      setQrMessage({ type: "error", text: "Ảnh quá lớn, vui lòng chọn ảnh nhỏ hơn 1,5MB." });
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = async () => {
+      const res = await adminFetch(ADMIN_API_BASE + "/payment/qr-image", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ image: reader.result }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        applyConfig(data.config);
+        setQrMessage({ type: "ok", text: "Đã tải ảnh mã QR lên. Khách sẽ thấy ảnh này khi thanh toán." });
+      } else {
+        setQrMessage({ type: "error", text: data.message || "Tải ảnh thất bại." });
+      }
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleRemoveQr = async () => {
+    if (!confirm("Gỡ ảnh mã QR đã tải lên? Cửa hàng sẽ tự tạo mã QR từ thông tin tài khoản (nếu đã nhập).")) return;
+    const res = await adminFetch(ADMIN_API_BASE + "/payment/qr-image", { method: "DELETE" });
+    const data = await res.json().catch(() => ({}));
+    if (res.ok) {
+      applyConfig(data.config);
+      setQrMessage({ type: "ok", text: "Đã gỡ ảnh mã QR." });
+    }
+  };
+
+  const handleConfirmOrder = async (orderId) => {
+    if (!confirm("Xác nhận đã nhận đủ tiền cho đơn #" + orderId + "? Chỉ dùng khi đã đối chiếu sao kê ngân hàng.")) return;
+    const res = await adminFetch(ADMIN_API_BASE + "/payment/orders/" + encodeURIComponent(orderId) + "/confirm", { method: "POST" });
+    if (res.ok) {
+      if (onOrdersChanged) onOrdersChanged();
+    } else {
+      const data = await res.json().catch(() => ({}));
+      alert(data.message || "Không xác nhận được đơn hàng.");
+    }
+  };
+
+  const handleChangePassword = async (e) => {
+    e.preventDefault();
+    setPwMessage(null);
+    const res = await adminFetch(ADMIN_API_BASE + "/admin/change-password", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(pwForm),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (res.ok) {
+      setPwForm({ currentPassword: "", newPassword: "" });
+      setPwMessage({ type: "ok", text: "Đã đổi mật khẩu." });
+    } else {
+      setPwMessage({ type: "error", text: data.message || "Đổi mật khẩu thất bại." });
+    }
+  };
+
+  const hasBankInfo = Boolean(form.bankId && form.accountNo && form.accountName);
+  const autoQrUrl = hasBankInfo
+    ? "https://img.vietqr.io/image/" + encodeURIComponent(form.bankId) + "-" + encodeURIComponent(form.accountNo)
+      + "-compact2.png?amount=10000&addInfo=NET12345678&accountName=" + encodeURIComponent(form.accountName)
+    : "";
+  const uploadedQrUrl = qrState.hasQrImage ? ADMIN_API_BASE + "/payment/qr-image?v=" + qrState.qrImageVersion : "";
+  const previewUrl = uploadedQrUrl || autoQrUrl;
+  const pendingOrders = (orders || []).filter((o) => o.paymentMethod === "vietqr" && !o.isPaid && o.statusCode !== "cancelled");
+  const messageClass = (m) => (m.type === "ok" ? "text-emerald-700 bg-emerald-50 border-emerald-200" : "text-rose-700 bg-rose-50 border-rose-200");
+  const inputClass = "w-full px-3 py-2.5 border border-[#CBD5E1] rounded-xl focus:outline-none focus:border-[#0275A9]";
+
+  return (
+    <div className="space-y-6">
+      <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
+        <div className="xl:col-span-2 space-y-6">
+          <form onSubmit={handleSave} className="bg-white rounded-2xl border border-[#E5E8EC] p-6 shadow-2xs space-y-4">
+            <div>
+              <h3 className="font-extrabold text-sm text-[#141923]">1. Nhập thông tin tài khoản nhận tiền</h3>
+              <p className="text-xs text-[#707783]">Nếu không tải ảnh QR (mục 2), cửa hàng tự tạo mã VietQR đã điền sẵn số tiền và nội dung cho từng đơn.</p>
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-xs">
+              <div>
+                <label className="font-bold text-[#141923] block mb-1">Ngân hàng (mã VietQR)</label>
+                <input list="net-bank-list" value={form.bankId} onChange={(e) => updateField("bankId", e.target.value.toUpperCase())}
+                  placeholder="VD: SHB, MB, VCB" className={inputClass} />
+                <datalist id="net-bank-list">{BANK_SUGGESTIONS.map((b) => <option key={b} value={b} />)}</datalist>
+              </div>
+              <div>
+                <label className="font-bold text-[#141923] block mb-1">Số tài khoản</label>
+                <input value={form.accountNo} onChange={(e) => updateField("accountNo", e.target.value)} inputMode="numeric"
+                  placeholder="Chỉ gồm chữ số" className={inputClass} />
+              </div>
+              <div>
+                <label className="font-bold text-[#141923] block mb-1">Chủ tài khoản (HOA, không dấu)</label>
+                <input value={form.accountName} onChange={(e) => updateField("accountName", e.target.value.toUpperCase())}
+                  placeholder="NGUYEN VAN A" className={inputClass} />
+              </div>
+            </div>
+            {message && <div className={"text-xs border rounded-lg px-3 py-2 " + messageClass(message)}>{message.text}</div>}
+            <button type="submit" disabled={saving}
+              className="px-5 py-2.5 rounded-xl bg-[#0275A9] hover:bg-[#02628e] disabled:opacity-60 text-xs font-bold text-white transition cursor-pointer">
+              {saving ? "Đang lưu..." : "Lưu tài khoản nhận tiền"}
+            </button>
+          </form>
+
+          <div className="bg-white rounded-2xl border border-[#E5E8EC] p-6 shadow-2xs space-y-3 text-xs">
+            <div>
+              <h3 className="font-extrabold text-sm text-[#141923]">2. Hoặc tải ảnh mã QR của bạn lên</h3>
+              <p className="text-[#707783]">Dùng ảnh QR chụp từ app ngân hàng (PNG, JPEG, WebP, dưới 1,5MB). Khi có ảnh, khách sẽ thấy ảnh này, kèm số tiền và nội dung cần nhập.</p>
+            </div>
+            <div className="flex flex-wrap items-center gap-3">
+              <label className="px-4 py-2.5 rounded-xl bg-[#141923] hover:bg-[#0275A9] text-white font-bold transition cursor-pointer">
+                {qrState.hasQrImage ? "Đổi ảnh QR" : "Chọn ảnh QR"}
+                <input type="file" accept="image/png,image/jpeg,image/webp" onChange={handleQrFile} className="hidden" />
+              </label>
+              {qrState.hasQrImage && (
+                <button type="button" onClick={handleRemoveQr}
+                  className="px-4 py-2.5 rounded-xl border border-rose-300 text-rose-600 hover:bg-rose-50 font-bold cursor-pointer">
+                  Gỡ ảnh
+                </button>
+              )}
+            </div>
+            {qrMessage && <div className={"border rounded-lg px-3 py-2 " + messageClass(qrMessage)}>{qrMessage.text}</div>}
+          </div>
+        </div>
+
+        <div className="bg-white rounded-2xl border border-[#E5E8EC] p-6 shadow-2xs space-y-3 text-center">
+          <h3 className="font-extrabold text-sm text-[#141923] text-left">Khách sẽ thấy mã này</h3>
+          {previewUrl ? (
+            <>
+              <img src={previewUrl} alt="Mã QR xem trước" className="w-52 mx-auto rounded-xl border border-[#E5E8EC]" />
+              <p className="text-[11px] text-[#707783]">
+                {qrState.hasQrImage ? "Ảnh bạn đã tải lên." : "Mã tự tạo (mẫu 10.000₫)."} Hãy quét thử bằng app ngân hàng để kiểm tra đúng chủ tài khoản.
+              </p>
+            </>
+          ) : (
+            <p className="text-xs text-[#707783] py-10">Nhập thông tin tài khoản hoặc tải ảnh QR để xem trước.</p>
+          )}
+        </div>
+      </div>
+
+      <div className="bg-white rounded-2xl border border-[#E5E8EC] p-6 shadow-2xs space-y-3">
+        <h3 className="font-extrabold text-sm text-[#141923]">3. Đơn chờ thanh toán chuyển khoản ({pendingOrders.length})</h3>
+        <p className="text-xs text-[#707783]">Kiểm tra sao kê ngân hàng, thấy khách đã chuyển đúng số tiền và nội dung thì bấm xác nhận.</p>
+        {pendingOrders.length === 0 ? (
+          <p className="text-xs text-[#707783]">Không có đơn nào đang chờ thanh toán.</p>
+        ) : (
+          <div className="divide-y divide-[#E5E8EC] text-xs">
+            {pendingOrders.map((o) => (
+              <div key={o.orderId} className="py-2.5 flex items-center justify-between gap-3">
+                <div>
+                  <span className="font-black text-[#0275A9]">#{o.orderId}</span>
+                  <span className="text-[#707783]"> · {o.customerName} · {formatDate(o.createdAt)}</span>
+                </div>
+                <div className="flex items-center gap-3">
+                  <span className="font-bold text-[#141923]">{formatVND(o.total)}</span>
+                  <button onClick={() => handleConfirmOrder(o.orderId)}
+                    className="px-3 py-1.5 rounded-lg border border-emerald-300 text-emerald-700 hover:bg-emerald-50 font-bold cursor-pointer">
+                    Xác nhận đã nhận tiền
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <form onSubmit={handleChangePassword} className="bg-white rounded-2xl border border-[#E5E8EC] p-6 shadow-2xs space-y-3 text-xs max-w-xl">
+        <h3 className="font-extrabold text-sm text-[#141923]">4. Đổi mật khẩu quản trị</h3>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <input type="password" autoComplete="current-password" placeholder="Mật khẩu hiện tại" value={pwForm.currentPassword}
+            onChange={(e) => setPwForm({ ...pwForm, currentPassword: e.target.value })} className={inputClass} />
+          <input type="password" autoComplete="new-password" placeholder="Mật khẩu mới (từ 8 ký tự)" value={pwForm.newPassword}
+            onChange={(e) => setPwForm({ ...pwForm, newPassword: e.target.value })} className={inputClass} />
+        </div>
+        {pwMessage && <div className={"border rounded-lg px-3 py-2 " + messageClass(pwMessage)}>{pwMessage.text}</div>}
+        <button type="submit" disabled={!pwForm.currentPassword || !pwForm.newPassword}
+          className="px-5 py-2.5 rounded-xl bg-[#141923] hover:bg-[#0275A9] disabled:opacity-60 text-xs font-bold text-white transition cursor-pointer">
+          Đổi mật khẩu
+        </button>
+      </form>
+    </div>
+  );
+}
+
+function AdminApp({ onLogout }) {
   const [activeTab, setActiveTab] = useState("overview");
   const [orders, setOrders] = useState([]);
   const [products, setProducts] = useState(DEFAULT_PRODUCTS);
@@ -2409,15 +2793,12 @@ function AdminApp() {
   const [editingArticle, setEditingArticle] = useState(null);
   const [isArticleModalOpen, setIsArticleModalOpen] = useState(false);
 
-  const BACKEND_URL =
-    window.location.protocol.startsWith("http") && window.location.port !== "5173"
-      ? `${window.location.origin}/api`
-      : `http://${window.location.hostname || "localhost"}:5000/api`;
+  const BACKEND_URL = ADMIN_API_BASE;
 
   // Nạp danh sách đơn hàng trực tiếp từ Database SQLite
   const fetchOrdersFromDb = async () => {
     try {
-      const res = await fetch(`${BACKEND_URL}/orders`);
+      const res = await adminFetch(`${BACKEND_URL}/orders`);
       if (res.ok) {
         const data = await res.json();
         if (Array.isArray(data)) {
@@ -2433,7 +2814,7 @@ function AdminApp() {
   // Nạp danh sách sản phẩm trực tiếp từ Database SQLite
   const fetchProductsFromDb = async () => {
     try {
-      const res = await fetch(`${BACKEND_URL}/products`);
+      const res = await adminFetch(`${BACKEND_URL}/products`);
       if (res.ok) {
         const data = await res.json();
         if (Array.isArray(data)) {
@@ -2451,7 +2832,7 @@ function AdminApp() {
   // Kiểm tra sức khỏe kết nối Backend
   const checkBackendHealth = async () => {
     try {
-      const res = await fetch(`${BACKEND_URL}/health`);
+      const res = await adminFetch(`${BACKEND_URL}/health`);
       if (res.ok) {
         setBackendStatus("online");
         return true;
@@ -2469,11 +2850,11 @@ function AdminApp() {
     const timer = setInterval(() => {
       checkBackendHealth();
       fetchOrdersFromDb();
-      fetch(`${BACKEND_URL}/products/reviews`)
+      adminFetch(`${BACKEND_URL}/products/reviews`)
         .then((res) => res.json())
         .then((data) => { if (Array.isArray(data)) setReviews(data); })
         .catch(() => {});
-      fetch(`${BACKEND_URL}/comments`)
+      adminFetch(`${BACKEND_URL}/comments`)
         .then((res) => res.json())
         .then((data) => { if (Array.isArray(data)) setComments(data); })
         .catch(() => {});
@@ -2487,7 +2868,7 @@ function AdminApp() {
 
     fetchOrdersFromDb();
 
-    fetch(`${BACKEND_URL}/banners`)
+    adminFetch(`${BACKEND_URL}/banners`)
       .then((res) => res.json())
       .then((data) => {
         if (Array.isArray(data)) {
@@ -2498,32 +2879,32 @@ function AdminApp() {
       })
       .catch((err) => console.warn("[Admin] Chưa kết nối được Backend banners:", err));
 
-    fetch(`${BACKEND_URL}/articles`)
+    adminFetch(`${BACKEND_URL}/articles`)
       .then((res) => res.json())
       .then((data) => { if (Array.isArray(data)) setArticles(data); })
       .catch((err) => console.warn("[Admin] Chưa kết nối được Backend articles:", err));
 
-    fetch(`${BACKEND_URL}/faqs`)
+    adminFetch(`${BACKEND_URL}/faqs`)
       .then((res) => res.json())
       .then((data) => { if (Array.isArray(data)) setFaqs(data); })
       .catch((err) => console.warn("[Admin] Chưa kết nối được Backend faqs:", err));
 
-    fetch(`${BACKEND_URL}/settings`)
+    adminFetch(`${BACKEND_URL}/settings`)
       .then((res) => res.json())
       .then((data) => { if (data) setStoreSettings(data); })
       .catch((err) => console.warn("[Admin] Chưa kết nối được Backend settings:", err));
 
-    fetch(`${BACKEND_URL}/comments`)
+    adminFetch(`${BACKEND_URL}/comments`)
       .then((res) => res.json())
       .then((data) => { if (Array.isArray(data)) setComments(data); })
       .catch((err) => console.warn("[Admin] Chưa kết nối được Backend comments:", err));
 
-    fetch(`${BACKEND_URL}/vouchers`)
+    adminFetch(`${BACKEND_URL}/vouchers`)
       .then((res) => res.json())
       .then((data) => { if (Array.isArray(data)) setVouchers(data); })
       .catch((err) => console.warn("[Admin] Chưa kết nối được Backend vouchers:", err));
 
-    fetch(`${BACKEND_URL}/products/reviews`)
+    adminFetch(`${BACKEND_URL}/products/reviews`)
       .then((res) => res.json())
       .then((data) => { if (Array.isArray(data)) setReviews(data); })
       .catch((err) => console.warn("[Admin] Chưa kết nối được Backend reviews:", err));
@@ -2558,7 +2939,7 @@ function AdminApp() {
       return;
     }
     try {
-      const res = await fetch(`${BACKEND_URL}/products/reviews/${encodeURIComponent(reviewId)}/reply`, {
+      const res = await adminFetch(`${BACKEND_URL}/products/reviews/${encodeURIComponent(reviewId)}/reply`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ reply: reviewReplyContent.trim() })
@@ -2584,7 +2965,7 @@ function AdminApp() {
       return;
     }
     try {
-      await fetch(`${BACKEND_URL}/comments/${commentId}/reply`, {
+      await adminFetch(`${BACKEND_URL}/comments/${commentId}/reply`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ reply: replyContent.trim() })
@@ -2601,7 +2982,7 @@ function AdminApp() {
   const handleDeleteComment = async (commentId) => {
     if (!confirm("Bạn có chắc muốn xóa bình luận này khỏi hệ thống?")) return;
     try {
-      await fetch(`${BACKEND_URL}/comments/${commentId}`, { method: "DELETE" });
+      await adminFetch(`${BACKEND_URL}/comments/${commentId}`, { method: "DELETE" });
       setComments(prev => prev.filter(c => c.id !== commentId));
       showToast("Đã xóa bình luận thành công!", "info");
     } catch (err) {
@@ -2613,7 +2994,7 @@ function AdminApp() {
   const handleStatusChange = async (orderId, newStatus) => {
     const cleanId = String(orderId).replace(/^#+/, "");
     try {
-      const res = await fetch(`${BACKEND_URL}/orders/${encodeURIComponent(cleanId)}/status`, {
+      const res = await adminFetch(`${BACKEND_URL}/orders/${encodeURIComponent(cleanId)}/status`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ status: newStatus, trangThai: newStatus }),
@@ -2636,7 +3017,7 @@ function AdminApp() {
     try {
       if (prodData.id) {
         // Cập nhật sản phẩm thật vào SQLite qua API PUT
-        const res = await fetch(`${BACKEND_URL}/products/${prodData.id}`, {
+        const res = await adminFetch(`${BACKEND_URL}/products/${prodData.id}`, {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(prodData),
@@ -2661,7 +3042,7 @@ function AdminApp() {
         status: prodData.status || "active",
         trangThai: prodData.status || "active",
         };
-        const res = await fetch(`${BACKEND_URL}/products`, {
+        const res = await adminFetch(`${BACKEND_URL}/products`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(newProd),
@@ -2685,7 +3066,7 @@ function AdminApp() {
     const nextStatus = p.status === "active" ? "inactive" : "active";
     const nextLabel = nextStatus === "active" ? "Đang bán" : "Tạm ẩn";
     try {
-      const res = await fetch(`${BACKEND_URL}/products/${p.id}`, {
+      const res = await adminFetch(`${BACKEND_URL}/products/${p.id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ status: nextStatus, trangThai: nextStatus }),
@@ -2703,7 +3084,7 @@ function AdminApp() {
     const p = products.find((x) => x.id === productId);
     if (!confirm(`Bạn có chắc muốn xóa vĩnh viễn sản phẩm "${p?.name || productId}" khỏi Database SQLite?`)) return;
     try {
-      const res = await fetch(`${BACKEND_URL}/products/${productId}`, { method: "DELETE" });
+      const res = await adminFetch(`${BACKEND_URL}/products/${productId}`, { method: "DELETE" });
       if (!res.ok) throw new Error(`Mã lỗi HTTP: ${res.status}`);
       await fetchProductsFromDb();
       showToast(`✅ Đã xóa sản phẩm khỏi Database: ${p?.name || productId}`, "info");
@@ -2717,7 +3098,7 @@ function AdminApp() {
   // Voucher Handlers
   const handleCreateVoucher = async (newVoucher) => {
     try {
-      await fetch(`${BACKEND_URL}/vouchers`, {
+      await adminFetch(`${BACKEND_URL}/vouchers`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -2739,7 +3120,7 @@ function AdminApp() {
   const handleDeleteVoucher = async (code) => {
     if (!confirm(`Bạn có chắc muốn xóa mã voucher "${code}" khỏi SQLite?`)) return;
     try {
-      await fetch(`${BACKEND_URL}/vouchers/${encodeURIComponent(code)}`, { method: "DELETE" });
+      await adminFetch(`${BACKEND_URL}/vouchers/${encodeURIComponent(code)}`, { method: "DELETE" });
       showToast(`Đã xóa mã voucher ${code} khỏi SQLite!`, "info");
     } catch {
       showToast(`Đã xóa mã voucher ${code} (cục bộ)!`, "info");
@@ -2751,7 +3132,7 @@ function AdminApp() {
   const handleDeleteReview = async (reviewId) => {
     if (!confirm("Bạn có chắc muốn xóa đánh giá này khỏi SQLite?")) return;
     try {
-      await fetch(`${BACKEND_URL}/products/reviews/${encodeURIComponent(reviewId)}`, { method: "DELETE" });
+      await adminFetch(`${BACKEND_URL}/products/reviews/${encodeURIComponent(reviewId)}`, { method: "DELETE" });
       showToast("Đã xóa đánh giá vi phạm khỏi SQLite!", "success");
     } catch {
       showToast("Đã xóa đánh giá vi phạm (cục bộ)!", "info");
@@ -2771,7 +3152,7 @@ function AdminApp() {
   // Banner Handlers
   const handleSaveHeroBanner = async () => {
     try {
-      await fetch(`${BACKEND_URL}/banners/hero`, {
+      await adminFetch(`${BACKEND_URL}/banners/hero`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(heroForm),
@@ -2785,7 +3166,7 @@ function AdminApp() {
 
   const handleSavePromoBanner = async (bannerId, bannerData) => {
     try {
-      await fetch(`${BACKEND_URL}/banners/${bannerId}`, {
+      await adminFetch(`${BACKEND_URL}/banners/${bannerId}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(bannerData),
@@ -2801,7 +3182,7 @@ function AdminApp() {
   const handleSaveArticle = async (articleData) => {
     if (articleData.id) {
       try {
-        await fetch(`${BACKEND_URL}/articles/${articleData.id}`, {
+        await adminFetch(`${BACKEND_URL}/articles/${articleData.id}`, {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(articleData),
@@ -2813,7 +3194,7 @@ function AdminApp() {
       }
     } else {
       try {
-        const res = await fetch(`${BACKEND_URL}/articles`, {
+        const res = await adminFetch(`${BACKEND_URL}/articles`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(articleData),
@@ -2832,7 +3213,7 @@ function AdminApp() {
   const handleDeleteArticle = async (artId) => {
     if (!confirm("Bạn có chắc muốn xóa bài viết này không?")) return;
     try {
-      await fetch(`${BACKEND_URL}/articles/${artId}`, { method: "DELETE" });
+      await adminFetch(`${BACKEND_URL}/articles/${artId}`, { method: "DELETE" });
       setArticles((prev) => prev.filter((a) => a.id !== artId));
       showToast("Đã xóa bài viết thành công!", "info");
     } catch {
@@ -2843,7 +3224,7 @@ function AdminApp() {
   // Settings Handlers
   const handleSaveSettings = async (newSettings) => {
     try {
-      await fetch(`${BACKEND_URL}/settings`, {
+      await adminFetch(`${BACKEND_URL}/settings`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(newSettings),
@@ -2907,6 +3288,7 @@ function AdminApp() {
             { id: "vouchers", label: "Mã ưu đãi", icon: "ticket" },
             { id: "reviews", label: "Đánh giá khách hàng", icon: "star", badge: (Array.isArray(reviews) ? reviews.filter(r => !r.reply).length : 0) || null },
             { id: "comments", label: "Hỏi đáp & Bình luận", icon: "message-square", badge: comments.filter(c => !c.reply).length || null },
+            { id: "payments", label: "Thanh toán & QR", icon: "qr-code" },
             { id: "settings", label: "Cấu hình cửa hàng", icon: "settings" },
           ].map((item) => {
             const isActive = activeTab === item.id;
@@ -2943,6 +3325,13 @@ function AdminApp() {
           <p className="text-[10px] text-[#707783] mt-1">
             Đồng bộ 2 chiều tức thì với giao diện Storefront
           </p>
+          <button
+            onClick={onLogout}
+            className="mt-3 w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg border border-[#CBD5E1] text-xs font-bold text-[#141923] hover:bg-white hover:text-rose-600 transition cursor-pointer"
+          >
+            <Icon name="log-out" className="w-4 h-4" />
+            <span>Đăng xuất</span>
+          </button>
         </div>
       </aside>
 
@@ -2961,6 +3350,7 @@ function AdminApp() {
               {activeTab === "vouchers" && "Mã khuyến mãi & Voucher"}
               {activeTab === "reviews" && "Kiểm duyệt Nhận xét"}
               {activeTab === "comments" && "Hỏi đáp & Bình luận Sản phẩm"}
+              {activeTab === "payments" && "Thanh toán & Mã QR Napas 247"}
               {activeTab === "settings" && "Cấu hình Cửa hàng & Showrooms"}
             </h1>
           </div>
@@ -3919,6 +4309,10 @@ function AdminApp() {
           )}
 
           {/* TAB: CẤU HÌNH CỬA HÀNG & SHOWROOMS */}
+          {activeTab === "payments" && (
+            <PaymentsPanel orders={orders} onOrdersChanged={fetchOrdersFromDb} />
+          )}
+
           {activeTab === "settings" && (
             <div className="space-y-6">
               <div className="flex items-center justify-between">
@@ -4352,7 +4746,7 @@ function AdminApp() {
 }
 
 const root = ReactDOM.createRoot(document.getElementById('root'));
-root.render(<AdminApp />);
+root.render(<AdminGate />);
   </script>
 </body>
 </html>

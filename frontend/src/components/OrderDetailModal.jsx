@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import Icon from './Icon.jsx';
 import { formatVND } from '../utils/formatters.js';
+import PaymentQrBox from './PaymentQrBox.jsx';
 
 export function OrderDetailModal({ order, isOpen, onClose, onCancelOrder, onReorder }) {
   if (!isOpen || !order) return null;
@@ -112,21 +113,7 @@ export function OrderDetailModal({ order, isOpen, onClose, onCancelOrder, onReor
           </div>
 
           {/* Payment & QR */}
-          {order.paymentMethod === "vietqr" && !isCancelled && (
-            <div className="p-4 bg-[#EAF4FA] border border-[#0275A9]/30 rounded-xl space-y-2">
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-bold text-[#0275A9]">Mã QR thanh toán chuyển khoản:</span>
-                <span className="text-[11px] bg-white text-[#0275A9] font-bold px-2 py-0.5 rounded border border-[#0275A9]/20">VietQR Napas247</span>
-              </div>
-              <div className="flex justify-center p-2 bg-white rounded-lg border border-[#E5E8EC]">
-                <img
-                  src={generateVietQRUrl(order.total, order.orderId)}
-                  alt="VietQR"
-                  className="max-h-40 object-contain"
-                />
-              </div>
-            </div>
-          )}
+          {order.paymentMethod === "vietqr" && !isCancelled && <PaymentQrBox order={order} />}
 
           {/* Pricing Summary */}
           <div className="p-4 bg-[#F8FAFC] rounded-xl border border-[#E5E8EC] space-y-1.5 text-xs">

@@ -1,10 +1,19 @@
 import { DatabaseSync } from 'node:sqlite';
+import { copyFileSync, existsSync, mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const dbPath = path.join(__dirname, '..', 'database.sqlite');
+const dbPath = process.env.DB_PATH || path.join(__dirname, '..', 'database.sqlite');
+
+// Lần chạy đầu tiên (ví dụ vừa deploy, ổ đĩa còn trống): dựng CSDL từ bản mẫu sạch seed.sqlite
+const seedPath = path.join(__dirname, '..', 'seed.sqlite');
+if (!existsSync(dbPath) && existsSync(seedPath)) {
+  mkdirSync(path.dirname(dbPath), { recursive: true });
+  copyFileSync(seedPath, dbPath);
+  console.log(`[DB] Đã khởi tạo ${dbPath} từ seed.sqlite`);
+}
 
 export const db = new DatabaseSync(dbPath);
 db.exec('PRAGMA foreign_keys = ON;');
@@ -204,17 +213,37 @@ export function formatOrder(row) {
     userId: row.ma_nguoi_dung || '',
     maNguoiDung: row.ma_nguoi_dung || '',
     isVerifiedUser: true,
+    isPaid: Boolean(row.da_thanh_toan),
+    paidAt: row.thoi_gian_thanh_toan || null,
+    bankTransactionId: row.ma_giao_dich_ngan_hang || '',
   };
 }
 
-try {
-  const donHangCols = db.prepare("PRAGMA table_info(don_hang)").all();
-  if (!donHangCols.some((c) => c.name === 'ma_nguoi_dung')) {
-    db.exec('ALTER TABLE don_hang ADD COLUMN ma_nguoi_dung TEXT;');
+function addColumnIfMissing(table, column, definition) {
+  const cols = db.prepare(`PRAGMA table_info(${table})`).all();
+  if (!cols.some((c) => c.name === column)) {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition};`);
   }
+}
+
+try {
+  addColumnIfMissing('don_hang', 'ma_nguoi_dung', 'TEXT');
+  addColumnIfMissing('don_hang', 'da_thanh_toan', 'INTEGER DEFAULT 0');
+  addColumnIfMissing('don_hang', 'thoi_gian_thanh_toan', 'TEXT');
+  addColumnIfMissing('don_hang', 'ma_giao_dich_ngan_hang', 'TEXT');
 } catch (e) {
   console.warn('[DB Migration Notice]', e.message);
 }
+
+db.exec(`
+CREATE TABLE IF NOT EXISTS quan_tri_vien (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ten_dang_nhap TEXT UNIQUE NOT NULL,
+    mat_khau_bam TEXT NOT NULL,
+    muoi TEXT NOT NULL,
+    ngay_tao DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+`);
 
 db.exec(`
 CREATE TABLE IF NOT EXISTS nguoi_dung (

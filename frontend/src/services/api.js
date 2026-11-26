@@ -3,17 +3,28 @@
  * Switch between Local Mock / localStorage and Backend REST API (Node.js, FastAPI, Spring)
  */
 
-const DYNAMIC_API_BASE =
-  typeof window !== 'undefined' &&
-  window.location.protocol.startsWith('http') &&
-  window.location.port !== '5173'
-    ? `${window.location.origin}/api`
-    : `http://${(typeof window !== 'undefined' && window.location.hostname) || 'localhost'}:5000/api`;
+// Khi được Express phục vụ qua http(s) (local hoặc đã deploy) thì gọi API cùng origin;
+// khi mở file:/// hoặc chạy Vite dev (cổng 5173) thì trỏ về backend cổng 5000
+// (dùng hostname hiện tại để hỗ trợ truy cập qua mạng LAN).
+function resolveApiBaseUrl() {
+  const hasWindow = typeof window !== 'undefined';
+  const isServedByBackend = hasWindow
+    && window.location.protocol.startsWith('http')
+    && window.location.port !== '5173';
+  if (isServedByBackend) return `${window.location.origin}/api`;
+  const host = (hasWindow && window.location.hostname) || 'localhost';
+  return `http://${host}:5000/api`;
+}
+
+export const API_BASE_URL = resolveApiBaseUrl();
+
+// Khóa localStorage chứa token phiên đăng nhập của khách hàng
+export const AUTH_TOKEN_KEY = 'net_auth_token';
 
 export const API_CONFIG = {
   // Bật kết nối Backend thật 100% (tự động nhận LAN / Online / localhost)
   USE_BACKEND_API: true,
-  BASE_URL: DYNAMIC_API_BASE,
+  BASE_URL: API_BASE_URL,
   TIMEOUT_MS: 10000,
   HEADERS: {}
 };
@@ -27,8 +38,8 @@ export async function apiClient(endpoint, { method = 'GET', body = null, headers
     throw new Error('[API] Backend integration is currently turned off. Please enable API_CONFIG.USE_BACKEND_API.');
   }
 
-  const token = localStorage.getItem('net_auth_token');
-  const authHeaders = (token && method !== 'GET') ? { 'Authorization': `Bearer ${token}` } : {};
+  const token = localStorage.getItem(AUTH_TOKEN_KEY);
+  const authHeaders = token ? { 'Authorization': `Bearer ${token}` } : {};
 
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), API_CONFIG.TIMEOUT_MS);
@@ -54,6 +65,11 @@ export async function apiClient(endpoint, { method = 'GET', body = null, headers
     clearTimeout(timeoutId);
 
     if (!response.ok) {
+      if (response.status === 401 && token) {
+        // Token hết hạn hoặc không còn hợp lệ: xóa và báo cho ứng dụng đăng xuất
+        localStorage.removeItem(AUTH_TOKEN_KEY);
+        window.dispatchEvent(new Event('net-auth-expired'));
+      }
       const errBody = await response.json().catch(() => ({}));
       const error = new Error(errBody.message || `Lỗi máy chủ HTTP ${response.status}`);
       error.status = response.status;

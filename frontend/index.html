@@ -211,18 +211,17 @@ function setStorage(key, value) {
 }
 
 /**
- * Tạo URL ảnh mã VietQR thanh toán ngân hàng chuẩn Napas 247
+ * Tạo URL ảnh mã VietQR thanh toán ngân hàng chuẩn Napas 247.
+ * Thông tin tài khoản lấy từ cấu hình của cửa hàng (admin quản lý), không có giá trị mặc định giả.
  */
-function generateVietQRUrl({
-  bankId = 'MB',
-  accountNo = '0901234567',
-  accountName = 'NET STORE VN',
-  amount = 0,
-  memo = ''
-}) {
-  const encodedName = encodeURIComponent(accountName);
-  const encodedMemo = encodeURIComponent(memo || 'THANH TOAN DON HANG NET');
-  return `https://img.vietqr.io/image/${bankId}-${accountNo}-compact2.png?amount=${amount}&addInfo=${encodedMemo}&accountName=${encodedName}`;
+function generateVietQRUrl({ bankId, accountNo, accountName, amount = 0, memo = '' }) {
+  if (!bankId || !accountNo) return '';
+  const params = new URLSearchParams({
+    amount: String(Math.round(Number(amount) || 0)),
+    addInfo: memo,
+    accountName: accountName || '',
+  });
+  return `https://img.vietqr.io/image/${encodeURIComponent(bankId)}-${encodeURIComponent(accountNo)}-compact2.png?${params.toString()}`;
 }
 
 
@@ -297,17 +296,28 @@ function parseRoute(hashString) {
  * Switch between Local Mock / localStorage and Backend REST API (Node.js, FastAPI, Spring)
  */
 
-const DYNAMIC_API_BASE =
-  typeof window !== 'undefined' &&
-  window.location.protocol.startsWith('http') &&
-  window.location.port !== '5173'
-    ? `${window.location.origin}/api`
-    : `http://${(typeof window !== 'undefined' && window.location.hostname) || 'localhost'}:5000/api`;
+// Khi được Express phục vụ qua http(s) (local hoặc đã deploy) thì gọi API cùng origin;
+// khi mở file:/// hoặc chạy Vite dev (cổng 5173) thì trỏ về backend cổng 5000
+// (dùng hostname hiện tại để hỗ trợ truy cập qua mạng LAN).
+function resolveApiBaseUrl() {
+  const hasWindow = typeof window !== 'undefined';
+  const isServedByBackend = hasWindow
+    && window.location.protocol.startsWith('http')
+    && window.location.port !== '5173';
+  if (isServedByBackend) return `${window.location.origin}/api`;
+  const host = (hasWindow && window.location.hostname) || 'localhost';
+  return `http://${host}:5000/api`;
+}
+
+const API_BASE_URL = resolveApiBaseUrl();
+
+// Khóa localStorage chứa token phiên đăng nhập của khách hàng
+const AUTH_TOKEN_KEY = 'net_auth_token';
 
 const API_CONFIG = {
   // Bật kết nối Backend thật 100% (tự động nhận LAN / Online / localhost)
   USE_BACKEND_API: true,
-  BASE_URL: DYNAMIC_API_BASE,
+  BASE_URL: API_BASE_URL,
   TIMEOUT_MS: 10000,
   HEADERS: {}
 };
@@ -321,8 +331,8 @@ async function apiClient(endpoint, { method = 'GET', body = null, headers = {} }
     throw new Error('[API] Backend integration is currently turned off. Please enable API_CONFIG.USE_BACKEND_API.');
   }
 
-  const token = localStorage.getItem('net_auth_token');
-  const authHeaders = (token && method !== 'GET') ? { 'Authorization': `Bearer ${token}` } : {};
+  const token = localStorage.getItem(AUTH_TOKEN_KEY);
+  const authHeaders = token ? { 'Authorization': `Bearer ${token}` } : {};
 
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), API_CONFIG.TIMEOUT_MS);
@@ -348,6 +358,11 @@ async function apiClient(endpoint, { method = 'GET', body = null, headers = {} }
     clearTimeout(timeoutId);
 
     if (!response.ok) {
+      if (response.status === 401 && token) {
+        // Token hết hạn hoặc không còn hợp lệ: xóa và báo cho ứng dụng đăng xuất
+        localStorage.removeItem(AUTH_TOKEN_KEY);
+        window.dispatchEvent(new Event('net-auth-expired'));
+      }
       const errBody = await response.json().catch(() => ({}));
       const error = new Error(errBody.message || `Lỗi máy chủ HTTP ${response.status}`);
       error.status = response.status;
@@ -470,11 +485,11 @@ const ORDERS_STORAGE_KEY = 'net_orders';
 
 const orderService = {
   /**
-   * Get all customer orders
+   * Get customer orders (theo số điện thoại; không truyền phone thì server chỉ trả đơn cho admin)
    */
-  async getOrders() {
+  async getOrders(phone) {
     if (API_CONFIG.USE_BACKEND_API) {
-      return await apiClient('/orders');
+      return await apiClient(phone ? `/orders?phone=${encodeURIComponent(phone)}` : '/orders');
     }
     return Promise.resolve(getStorage(ORDERS_STORAGE_KEY, []));
   },
@@ -535,6 +550,50 @@ const orderService = {
   }
 };
 
+/**
+ * NÉT. Payment Service
+ * Lấy cấu hình tài khoản nhận tiền và trạng thái thanh toán của đơn hàng
+ */
+
+const paymentService = {
+  /** Cấu hình tài khoản nhận tiền: { bankId, accountNo, accountName, prefix, configured } */
+  async getConfig() {
+    return await apiClient('/payment/config');
+  },
+
+  /** Trạng thái thanh toán của đơn: { orderId, paid, status } */
+  async getStatus(orderId) {
+    return await apiClient(`/payment/status/${encodeURIComponent(orderId)}`);
+  },
+};
+/**
+ * NÉT. Auth Service
+ * Đăng ký / đăng nhập khách hàng qua backend; token phiên lưu ở localStorage và được apiClient tự gắn vào mọi request.
+ */
+
+function saveSession(result) {
+  localStorage.setItem(AUTH_TOKEN_KEY, result.token);
+  return result.user;
+}
+
+const authService = {
+  /** Trả về thông tin người dùng; ném lỗi (kèm thông báo của server) nếu sai thông tin */
+  async login(phone, password) {
+    return saveSession(await apiClient('/auth/login', { method: 'POST', body: { phone, password } }));
+  },
+
+  async register({ fullName, phone, email, password }) {
+    return saveSession(await apiClient('/auth/register', { method: 'POST', body: { fullName, phone, email, password } }));
+  },
+
+  logout() {
+    localStorage.removeItem(AUTH_TOKEN_KEY);
+  },
+
+  hasSession() {
+    return Boolean(localStorage.getItem(AUTH_TOKEN_KEY));
+  },
+};
 
 /**
  * NÉT. Voucher Service
@@ -1595,6 +1654,120 @@ function VoucherModal({ isOpen, onClose, cartSubtotal, onSelectVoucher, currentC
 
 
 
+const QR_POLL_INTERVAL_MS = 4000;
+
+/**
+ * Khung thanh toán chuyển khoản: hiển thị mã QR do admin tải lên, hoặc tự tạo mã VietQR
+ * từ thông tin tài khoản. Khi admin xác nhận đã nhận tiền, khung tự chuyển sang "Đã nhận thanh toán".
+ */
+function PaymentQrBox({ order }) {
+  const [config, setConfig] = useState(null);
+  const [paidByPolling, setPaidByPolling] = useState(false);
+  const isPaid = paidByPolling || Boolean(order.isPaid);
+  const isCancelled = order.status === 'Đã hủy' || order.statusCode === 'cancelled';
+
+  useEffect(() => {
+    paymentService.getConfig()
+      .then(setConfig)
+      .catch(() => setConfig({ configured: false }));
+  }, []);
+
+  useEffect(() => {
+    if (isPaid || isCancelled) return undefined;
+    const timer = setInterval(() => {
+      paymentService.getStatus(order.orderId)
+        .then((s) => { if (s.paid) setPaidByPolling(true); })
+        .catch(() => { /* lần thăm dò sau sẽ thử lại */ });
+    }, QR_POLL_INTERVAL_MS);
+    return () => clearInterval(timer);
+  }, [order.orderId, isPaid, isCancelled]);
+
+  if (isCancelled) return null;
+
+  if (isPaid) {
+    return (
+      <div className="p-5 rounded-2xl border border-emerald-200 bg-emerald-50 flex items-center gap-3">
+        <Icon name="check-circle-2" className="w-8 h-8 text-emerald-600 shrink-0" />
+        <div>
+          <div className="text-sm font-bold text-emerald-700">Đã nhận thanh toán</div>
+          <div className="text-xs text-emerald-700/80">Cảm ơn bạn! Đơn hàng #{order.orderId} đang được xử lý.</div>
+        </div>
+      </div>
+    );
+  }
+
+  if (!config) {
+    return <div className="p-5 text-xs text-[#707783] text-center">Đang tải thông tin thanh toán...</div>;
+  }
+
+  if (!config.configured) {
+    return (
+      <div className="p-5 rounded-2xl border border-amber-200 bg-amber-50 text-xs text-amber-800">
+        Cửa hàng chưa cấu hình tài khoản nhận tiền nên chưa thể tạo mã QR. Vui lòng liên hệ hotline để được hỗ trợ thanh toán đơn #{order.orderId}.
+      </div>
+    );
+  }
+
+  // Ảnh admin tải lên là mã QR tĩnh (không kèm số tiền); mã tự tạo đã điền sẵn số tiền và nội dung
+  const qrSrc = config.hasQrImage
+    ? `${API_BASE_URL}/payment/qr-image?v=${config.qrImageVersion}`
+    : generateVietQRUrl({
+        bankId: config.bankId,
+        accountNo: config.accountNo,
+        accountName: config.accountName,
+        amount: order.total,
+        memo: order.orderId,
+      });
+
+  return (
+    <div className="qr-box p-6 rounded-2xl border space-y-4">
+      <div className="text-center">
+        <h3 className="text-sm font-bold text-[#141923]">Quét mã QR để chuyển khoản</h3>
+        <p className="text-xs text-[#707783] mt-0.5">
+          {config.hasQrImage
+            ? "Mở app ngân hàng, quét mã rồi nhập đúng số tiền và nội dung bên dưới."
+            : "Mở app ngân hàng bất kỳ và chọn Quét QR, số tiền và nội dung đã được điền sẵn."}
+          {" "}Cửa hàng sẽ xác nhận ngay khi nhận được tiền.
+        </p>
+      </div>
+
+      <div className="flex flex-col sm:flex-row items-center justify-center gap-6 pt-2">
+        <div className="p-3 bg-white rounded-xl shadow-md border border-[#E5E8EC]">
+          <img src={qrSrc} alt="Mã QR thanh toán" className="w-48 h-auto object-contain rounded-lg" />
+        </div>
+
+        <div className="space-y-2 text-xs">
+          {config.hasBankInfo && (
+            <>
+              <div className="p-2.5 bg-white rounded-lg border border-[#E5E8EC]">
+                <div className="text-[#707783] text-[10px]">Ngân hàng thụ hưởng</div>
+                <div className="font-bold text-[#141923]">{config.bankId}</div>
+              </div>
+              <div className="p-2.5 bg-white rounded-lg border border-[#E5E8EC]">
+                <div className="text-[#707783] text-[10px]">Số tài khoản</div>
+                <div className="font-mono font-bold text-[#0275A9] text-sm">{config.accountNo}</div>
+              </div>
+              <div className="p-2.5 bg-white rounded-lg border border-[#E5E8EC]">
+                <div className="text-[#707783] text-[10px]">Chủ tài khoản</div>
+                <div className="font-bold text-[#141923]">{config.accountName}</div>
+              </div>
+            </>
+          )}
+          <div className="p-2.5 bg-white rounded-lg border border-[#E5E8EC]">
+            <div className="text-[#707783] text-[10px]">Số tiền thanh toán</div>
+            <div className="font-bold text-rose-600 text-sm">{formatVND(order.total)}</div>
+          </div>
+          <div className="p-2.5 bg-white rounded-lg border border-[#E5E8EC]">
+            <div className="text-[#707783] text-[10px]">Nội dung chuyển khoản (giữ nguyên)</div>
+            <div className="font-mono font-bold text-[#141923]">{order.orderId}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
 function OrderDetailModal({ order, isOpen, onClose, onCancelOrder, onReorder }) {
   if (!isOpen || !order) return null;
 
@@ -1705,21 +1878,7 @@ function OrderDetailModal({ order, isOpen, onClose, onCancelOrder, onReorder }) 
           </div>
 
           {/* Payment & QR */}
-          {order.paymentMethod === "vietqr" && !isCancelled && (
-            <div className="p-4 bg-[#EAF4FA] border border-[#0275A9]/30 rounded-xl space-y-2">
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-bold text-[#0275A9]">Mã QR thanh toán chuyển khoản:</span>
-                <span className="text-[11px] bg-white text-[#0275A9] font-bold px-2 py-0.5 rounded border border-[#0275A9]/20">VietQR Napas247</span>
-              </div>
-              <div className="flex justify-center p-2 bg-white rounded-lg border border-[#E5E8EC]">
-                <img
-                  src={generateVietQRUrl(order.total, order.orderId)}
-                  alt="VietQR"
-                  className="max-h-40 object-contain"
-                />
-              </div>
-            </div>
-          )}
+          {order.paymentMethod === "vietqr" && !isCancelled && <PaymentQrBox order={order} />}
 
           {/* Pricing Summary */}
           <div className="p-4 bg-[#F8FAFC] rounded-xl border border-[#E5E8EC] space-y-1.5 text-xs">
@@ -1932,23 +2091,40 @@ function ReviewFormModal({ isOpen, onClose, product, onSubmitReview }) {
 }
 
 
-function AuthModal({ isOpen, currentUser, onLogin, onLogout, onClose, onNavigateOrders }) {
-  if (!isOpen) return null;
+const INPUT_CLASS = "w-full p-2.5 border border-[#E5E8EC] rounded-xl focus:border-[#0275A9] focus:outline-none";
 
+function AuthModal({ isOpen, currentUser, onLogin, onLogout, onClose, onNavigateOrders }) {
   const [authTab, setAuthTab] = useState("login");
   const [name, setName] = useState("");
   const [phone, setPhone] = useState("");
   const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
 
-  const handleLoginSubmit = (e) => {
+  if (!isOpen) return null;
+
+  const switchTab = (tab) => {
+    setAuthTab(tab);
+    setError("");
+  };
+
+  const handleSubmit = async (e) => {
     e.preventDefault();
-    if (!phone.trim()) return;
-    onLogin({
-      name: name.trim() || "Khách hàng nét.",
-      phone: phone.trim(),
-      email: email.trim() || `${phone.trim()}@net.vn`,
-      tier: "Hội viên Silver",
-    });
+    if (loading) return;
+    setError("");
+    setLoading(true);
+    try {
+      const user = authTab === "login"
+        ? await authService.login(phone.trim(), password)
+        : await authService.register({ fullName: name.trim(), phone: phone.trim(), email: email.trim(), password });
+      setPassword("");
+      onLogin(user);
+    } catch (err) {
+      setError(err.message || "Không thể kết nối máy chủ. Vui lòng thử lại.");
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
@@ -1994,7 +2170,7 @@ function AuthModal({ isOpen, currentUser, onLogin, onLogout, onClose, onNavigate
           <div className="space-y-4">
             <div className="flex border-b border-[#E5E8EC]">
               <button
-                onClick={() => setAuthTab("login")}
+                onClick={() => switchTab("login")}
                 className={`flex-1 py-2 text-xs font-bold transition border-b-2 ${
                   authTab === "login"
                     ? "border-[#0275A9] text-[#0275A9]"
@@ -2004,7 +2180,7 @@ function AuthModal({ isOpen, currentUser, onLogin, onLogout, onClose, onNavigate
                 Đăng nhập
               </button>
               <button
-                onClick={() => setAuthTab("register")}
+                onClick={() => switchTab("register")}
                 className={`flex-1 py-2 text-xs font-bold transition border-b-2 ${
                   authTab === "register"
                     ? "border-[#0275A9] text-[#0275A9]"
@@ -2015,7 +2191,7 @@ function AuthModal({ isOpen, currentUser, onLogin, onLogout, onClose, onNavigate
               </button>
             </div>
 
-            <form onSubmit={handleLoginSubmit} className="space-y-3 text-xs">
+            <form onSubmit={handleSubmit} className="space-y-3 text-xs">
               {authTab === "register" && (
                 <div>
                   <label className="block text-[#707783] mb-1 font-medium">Họ và tên</label>
@@ -2025,7 +2201,7 @@ function AuthModal({ isOpen, currentUser, onLogin, onLogout, onClose, onNavigate
                     value={name}
                     onChange={(e) => setName(e.target.value)}
                     placeholder="Nguyễn Văn A"
-                    className="w-full p-2.5 border border-[#E5E8EC] rounded-xl focus:border-[#0275A9] focus:outline-none"
+                    className={INPUT_CLASS}
                   />
                 </div>
               )}
@@ -2034,10 +2210,11 @@ function AuthModal({ isOpen, currentUser, onLogin, onLogout, onClose, onNavigate
                 <input
                   type="tel"
                   required
+                  autoComplete="tel"
                   value={phone}
                   onChange={(e) => setPhone(e.target.value)}
                   placeholder="0912 345 678"
-                  className="w-full p-2.5 border border-[#E5E8EC] rounded-xl focus:border-[#0275A9] focus:outline-none"
+                  className={INPUT_CLASS}
                 />
               </div>
               {authTab === "register" && (
@@ -2048,15 +2225,35 @@ function AuthModal({ isOpen, currentUser, onLogin, onLogout, onClose, onNavigate
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
                     placeholder="email@example.com"
-                    className="w-full p-2.5 border border-[#E5E8EC] rounded-xl focus:border-[#0275A9] focus:outline-none"
+                    className={INPUT_CLASS}
                   />
                 </div>
               )}
+              <div>
+                <label className="block text-[#707783] mb-1 font-medium">
+                  Mật khẩu{authTab === "register" ? " (từ 8 ký tự)" : ""}
+                </label>
+                <input
+                  type="password"
+                  required
+                  minLength={authTab === "register" ? 8 : undefined}
+                  autoComplete={authTab === "login" ? "current-password" : "new-password"}
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  className={INPUT_CLASS}
+                />
+              </div>
+              {error && (
+                <div className="text-rose-600 bg-rose-50 border border-rose-200 rounded-lg px-3 py-2">{error}</div>
+              )}
               <button
                 type="submit"
-                className="w-full py-2.5 bg-[#0275A9] hover:bg-[#02628e] text-white font-bold rounded-xl transition shadow-card mt-2"
+                disabled={loading}
+                className="w-full py-2.5 bg-[#0275A9] hover:bg-[#02628e] disabled:opacity-60 text-white font-bold rounded-xl transition shadow-card mt-2"
               >
-                {authTab === "login" ? "Đăng nhập ngay" : "Tạo tài khoản thành viên"}
+                {loading
+                  ? "Đang xử lý..."
+                  : authTab === "login" ? "Đăng nhập ngay" : "Tạo tài khoản thành viên"}
               </button>
             </form>
           </div>
@@ -3406,6 +3603,7 @@ function CheckoutPage({ cart, cartSubtotal, onClearCart, onNavigate, currentUser
   });
 
   const [errors, setErrors] = useState({});
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const [couponInput, setCouponInput] = useState(selectedVoucherCode || "");
   const [appliedVoucher, setAppliedVoucher] = useState(null);
   const [discountAmount, setDiscountAmount] = useState(0);
@@ -3484,8 +3682,9 @@ function CheckoutPage({ cart, cartSubtotal, onClearCart, onNavigate, currentUser
     }
   };
 
-  const handleSubmitOrder = (e) => {
+  const handleSubmitOrder = async (e) => {
     e.preventDefault();
+    if (isSubmitting) return;
     const e1 = validateField("fullName", formData.fullName);
     const e2 = validateField("phone", formData.phone);
     const e3 = validateField("email", formData.email);
@@ -3501,9 +3700,7 @@ function CheckoutPage({ cart, cartSubtotal, onClearCart, onNavigate, currentUser
       return;
     }
 
-    const orderId = generateOrderId();
     const newOrder = {
-      orderId,
       date: new Date().toLocaleDateString("vi-VN"),
       time: new Date().toLocaleTimeString("vi-VN"),
       customer: { ...formData },
@@ -3516,9 +3713,17 @@ function CheckoutPage({ cart, cartSubtotal, onClearCart, onNavigate, currentUser
       status: "Chờ xác nhận",
     };
 
-    onAddOrder(newOrder);
-    onClearCart();
-    onNavigate(`#/order-success/${orderId}`);
+    setIsSubmitting(true);
+    try {
+      // Mã đơn do server cấp nên phải chờ server trả về trước khi chuyển trang
+      const created = await onAddOrder(newOrder);
+      onClearCart();
+      onNavigate(`#/order-success/${created.orderId}`);
+    } catch (err) {
+      onShowToast(err.message || "Không thể tạo đơn hàng. Vui lòng thử lại!", "info");
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   if (cart.length === 0) {
@@ -3830,9 +4035,10 @@ function CheckoutPage({ cart, cartSubtotal, onClearCart, onNavigate, currentUser
             {/* Place Order Button */}
             <button
               type="submit"
-              className="w-full py-4 bg-[#0275A9] hover:bg-[#02628e] text-white font-bold text-xs uppercase tracking-wider rounded-xl transition shadow-md active:scale-98 cursor-pointer mt-4"
+              disabled={isSubmitting}
+              className="w-full py-4 bg-[#0275A9] hover:bg-[#02628e] disabled:opacity-60 disabled:cursor-wait text-white font-bold text-xs uppercase tracking-wider rounded-xl transition shadow-md active:scale-98 cursor-pointer mt-4"
             >
-              Xác nhận đặt hàng ngay
+              {isSubmitting ? "Đang tạo đơn hàng..." : "Xác nhận đặt hàng ngay"}
             </button>
             <p className="text-[11px] text-center text-[#707783]">
               Bằng cách đặt hàng, bạn đồng ý với Điều khoản mua sắm của nét.
@@ -3863,14 +4069,6 @@ function OrderSuccessPage({ orderId, orders, onNavigate }) {
     );
   }
 
-  const qrUrl = generateVietQRUrl({
-    bankId: "MB",
-    accountNo: "0901234567",
-    accountName: "NET STORE VN",
-    amount: order.total,
-    memo: order.orderId,
-  });
-
   return (
     <div className="w-full max-w-3xl mx-auto px-4 py-12 animate-in zoom-in-95 duration-200 space-y-8">
       {/* Success Badge */}
@@ -3887,42 +4085,8 @@ function OrderSuccessPage({ orderId, orders, onNavigate }) {
         </div>
       </div>
 
-      {/* VietQR Box if payment is VietQR */}
-      {order.paymentMethod === "vietqr" && (
-        <div className="qr-box p-6 rounded-2xl border space-y-4">
-          <div className="text-center">
-            <h3 className="text-sm font-bold text-[#141923]">Quét mã VietQR để hoàn tất chuyển khoản</h3>
-            <p className="text-xs text-[#707783] mt-0.5">
-              Mở App ngân hàng bất kỳ (Vietcombank, MB, Techcombank, VPBank...) và chọn Quét QR
-            </p>
-          </div>
-
-          <div className="flex flex-col sm:flex-row items-center justify-center gap-6 pt-2">
-            <div className="p-3 bg-white rounded-xl shadow-md border border-[#E5E8EC]">
-              <img src={qrUrl} alt="VietQR Payment" className="w-48 h-auto object-contain rounded-lg" />
-            </div>
-
-            <div className="space-y-2 text-xs">
-              <div className="p-2.5 bg-white rounded-lg border border-[#E5E8EC]">
-                <div className="text-[#707783] text-[10px]">Ngân hàng thụ hưởng</div>
-                <div className="font-bold text-[#141923]">MBBank (Ngân hàng Quân Đội)</div>
-              </div>
-              <div className="p-2.5 bg-white rounded-lg border border-[#E5E8EC]">
-                <div className="text-[#707783] text-[10px]">Số tài khoản</div>
-                <div className="font-mono font-bold text-[#0275A9] text-sm">0901 2345 67</div>
-              </div>
-              <div className="p-2.5 bg-white rounded-lg border border-[#E5E8EC]">
-                <div className="text-[#707783] text-[10px]">Chủ tài khoản</div>
-                <div className="font-bold text-[#141923]">NET STORE VN</div>
-              </div>
-              <div className="p-2.5 bg-white rounded-lg border border-[#E5E8EC]">
-                <div className="text-[#707783] text-[10px]">Số tiền thanh toán</div>
-                <div className="font-bold text-rose-600 text-sm">{formatVND(order.total)}</div>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
+      {/* VietQR: mã QR theo tài khoản thật, tự cập nhật khi admin xác nhận đã nhận tiền */}
+      {order.paymentMethod === "vietqr" && <PaymentQrBox order={order} />}
 
       {/* Order Summary Details */}
       <div className="p-6 bg-white border border-[#E5E8EC] rounded-2xl shadow-2xs space-y-4 text-xs">
@@ -4293,7 +4457,7 @@ function App() {
   const [cart, setCart] = useState(() => getStorage("net_cart", []));
   const [wishlist, setWishlist] = useState(() => getStorage("net_wishlist", []));
   const [orders, setOrders] = useState([]);
-  const [currentUser, setCurrentUser] = useState(() => getStorage("net_user", null));
+  const [currentUser, setCurrentUser] = useState(() => (authService.hasSession() ? getStorage("net_user", null) : null));
   const [isVoucherModalOpen, setIsVoucherModalOpen] = useState(false);
   const [selectedVoucherCode, setSelectedVoucherCode] = useState("");
   const [productReviews, setProductReviews] = useState(() => getStorage("net_custom_reviews", {}));
@@ -4308,30 +4472,22 @@ function App() {
         console.warn('[App] Backend offline, hiển thị catalog sản phẩm cục bộ:', err);
       });
 
-    orderService.getOrders()
-      .then((data) => {
-        if (data && data.length > 0) {
-          setOrders(data);
-        }
-      })
-      .catch((err) => console.error('[App] Lỗi tải đơn hàng từ backend:', err));
-
-    fetch(`${API_CONFIG.BASE_URL}/banners`)
+    fetch(`${API_BASE_URL}/banners`)
       .then((res) => res.json())
       .then((data) => { if (Array.isArray(data)) setBanners(data); })
       .catch((err) => console.error('[App] Lỗi tải banners:', err));
 
-    fetch(`${API_CONFIG.BASE_URL}/articles`)
+    fetch(`${API_BASE_URL}/articles`)
       .then((res) => res.json())
       .then((data) => { if (Array.isArray(data)) setArticles(data); })
       .catch((err) => console.error('[App] Lỗi tải articles:', err));
 
-    fetch(`${API_CONFIG.BASE_URL}/faqs`)
+    fetch(`${API_BASE_URL}/faqs`)
       .then((res) => res.json())
       .then((data) => { if (Array.isArray(data)) setFaqs(data); })
       .catch((err) => console.error('[App] Lỗi tải faqs:', err));
 
-    fetch(`${API_CONFIG.BASE_URL}/settings`)
+    fetch(`${API_BASE_URL}/settings`)
       .then((res) => res.json())
       .then((data) => { if (data) setStoreSettings(data); })
       .catch((err) => console.error('[App] Lỗi tải settings:', err));
@@ -4353,11 +4509,16 @@ function App() {
         })
         .catch((err) => console.warn('[App] Auto-refresh products error:', err));
 
-      orderService.getOrders()
-        .then((data) => {
-          if (Array.isArray(data)) setOrders(data);
-        })
-        .catch((err) => console.warn('[App] Auto-refresh orders error:', err));
+      // Chỉ tải đơn của chính khách đang đăng nhập (server không trả toàn bộ đơn cho khách)
+      if (currentUser?.phone) {
+        orderService.getOrders(currentUser.phone)
+          .then((data) => {
+            if (Array.isArray(data)) setOrders(data);
+          })
+          .catch((err) => console.warn('[App] Auto-refresh orders error:', err));
+      } else {
+        setOrders([]);
+      }
     };
 
     refreshData();
@@ -4367,28 +4528,24 @@ function App() {
       clearInterval(timer);
       window.removeEventListener('focus', refreshData);
     };
-  }, []);
+  }, [currentUser?.phone]);
 
+  // Trả về đơn do server tạo (mã đơn do server cấp). Lỗi được ném lên để trang thanh toán hiển thị.
   const handleAddOrder = async (newOrder) => {
-    try {
-      const created = await orderService.createOrder({
-        orderId: newOrder.orderId,
-        customerName: newOrder.customer?.fullName || newOrder.customerName || 'Khách vãng lai',
-        phone: newOrder.customer?.phone || newOrder.phone || '',
-        address: newOrder.customer?.address || newOrder.address || '',
-        note: newOrder.customer?.note || newOrder.note || '',
-        paymentMethod: newOrder.paymentMethod,
-        items: newOrder.items,
-        subtotal: newOrder.subtotal,
-        discount: newOrder.discountAmount || 0,
-        total: newOrder.total,
-        status: newOrder.status,
-      });
-      setOrders((prev) => [created || newOrder, ...prev]);
-    } catch (err) {
-      console.error('[App] Lỗi lưu đơn hàng vào backend:', err);
-      setOrders((prev) => [newOrder, ...prev]);
-    }
+    const created = await orderService.createOrder({
+      customerName: newOrder.customer?.fullName || newOrder.customerName || 'Khách vãng lai',
+      phone: newOrder.customer?.phone || newOrder.phone || '',
+      address: newOrder.customer?.address || newOrder.address || '',
+      note: newOrder.customer?.note || newOrder.note || '',
+      paymentMethod: newOrder.paymentMethod,
+      items: newOrder.items,
+      subtotal: newOrder.subtotal,
+      discount: newOrder.discountAmount || 0,
+      total: newOrder.total,
+      status: newOrder.status,
+    });
+    setOrders((prev) => [created, ...prev]);
+    return created;
   };
 
   const handleCancelOrder = (orderId, reason) => {
@@ -4427,6 +4584,16 @@ function App() {
   useEffect(() => setStorage("net_wishlist", wishlist), [wishlist]);
   useEffect(() => setStorage("net_orders", orders), [orders]);
   useEffect(() => setStorage("net_user", currentUser), [currentUser]);
+
+  // Token hết hạn hoặc bị server từ chối: đăng xuất để khách đăng nhập lại
+  useEffect(() => {
+    const handleSessionExpired = () => {
+      setCurrentUser(null);
+      showToast("Phiên đăng nhập đã hết hạn, vui lòng đăng nhập lại.", "info");
+    };
+    window.addEventListener('net-auth-expired', handleSessionExpired);
+    return () => window.removeEventListener('net-auth-expired', handleSessionExpired);
+  }, []);
 
   // 3. UI STATE
   const [isCartOpen, setIsCartOpen] = useState(false);
@@ -4730,6 +4897,7 @@ function App() {
           showToast(`Chào mừng trở lại, ${userData.name}!`, "success");
         }}
         onLogout={() => {
+          authService.logout();
           setCurrentUser(null);
           showToast("Đã đăng xuất tài khoản", "info");
         }}
