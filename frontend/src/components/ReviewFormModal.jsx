@@ -2,14 +2,14 @@ import React, { useState } from 'react';
 import Icon from './Icon.jsx';
 
 export function ReviewFormModal({ isOpen, onClose, product, onSubmitReview }) {
-  if (!isOpen || !product) return null;
-
   const [rating, setRating] = useState(5);
   const [hoverRating, setHoverRating] = useState(0);
   const [author, setAuthor] = useState("");
   const [phone, setPhone] = useState("");
   const [content, setContent] = useState("");
   const [verifiedBuyer, setVerifiedBuyer] = useState(true);
+
+  if (!isOpen || !product) return null;
 
   const handleSubmit = (e) => {
     e.preventDefault();
@@ -29,6 +29,11 @@ export function ReviewFormModal({ isOpen, onClose, product, onSubmitReview }) {
     };
 
     onSubmitReview(product.id, newRev);
+    setAuthor("");
+    setPhone("");
+    setContent("");
+    setRating(5);
+    setHoverRating(0);
     onClose();
   };
 

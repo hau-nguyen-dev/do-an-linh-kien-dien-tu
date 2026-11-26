@@ -2391,7 +2391,7 @@ function ProductFormModal({ product, onClose, onSave, categories, presetImages }
 const ADMIN_TOKEN_KEY = "net_admin_token";
 const ADMIN_API_BASE = (location.protocol.startsWith("http") && location.port !== "5173")
   ? location.origin + "/api"
-  : "http://localhost:5000/api";
+  : "http://" + (location.hostname || "localhost") + ":5000/api";
 
 function adminFetch(url, options = {}) {
   const token = sessionStorage.getItem(ADMIN_TOKEN_KEY);
@@ -2761,6 +2761,8 @@ function AdminApp({ onLogout }) {
   const [backendStatus, setBackendStatus] = useState("checking"); // "online" | "offline" | "checking"
   const [vouchers, setVouchers] = useState([]);
   const [reviews, setReviews] = useState([]);
+  const [replyingReviewId, setReplyingReviewId] = useState(null);
+  const [reviewReplyContent, setReviewReplyContent] = useState("");
   const [comments, setComments] = useState([]);
   const [replyingCommentId, setReplyingCommentId] = useState(null);
   const [replyContent, setReplyContent] = useState("");
@@ -2839,6 +2841,14 @@ function AdminApp({ onLogout }) {
     const timer = setInterval(() => {
       checkBackendHealth();
       fetchOrdersFromDb();
+      adminFetch(`${BACKEND_URL}/products/reviews`)
+        .then((res) => res.json())
+        .then((data) => { if (Array.isArray(data)) setReviews(data); })
+        .catch(() => {});
+      adminFetch(`${BACKEND_URL}/comments`)
+        .then((res) => res.json())
+        .then((data) => { if (Array.isArray(data)) setComments(data); })
+        .catch(() => {});
     }, 5000);
     return () => clearInterval(timer);
   }, []);
@@ -2912,6 +2922,32 @@ function AdminApp({ onLogout }) {
   const showToast = (message, type = "success") => {
     setToast({ message, type });
     setTimeout(() => setToast(null), 3000);
+  };
+
+  const handleReplyReview = async (reviewId) => {
+    if (!reviewReplyContent.trim()) {
+      showToast("Vui lòng nhập nội dung phản hồi", "info");
+      return;
+    }
+    try {
+      const res = await adminFetch(`${BACKEND_URL}/products/reviews/${encodeURIComponent(reviewId)}/reply`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reply: reviewReplyContent.trim() })
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const clean = reviewReplyContent.trim();
+      setReviews((prev) =>
+        Array.isArray(prev)
+          ? prev.map((r) => (r.id === reviewId ? { ...r, reply: clean } : r))
+          : prev
+      );
+      setReplyingReviewId(null);
+      setReviewReplyContent("");
+      showToast("Đã gửi phản hồi đánh giá thành công!", "success");
+    } catch (err) {
+      showToast("Lỗi khi gửi phản hồi: " + err.message, "rose");
+    }
   };
 
   const handleReplyComment = async (commentId) => {
@@ -3251,7 +3287,7 @@ Hãy đảm bảo file "start_backend.bat" đang chạy.`);
             { id: "banners", label: "Chiến dịch & Banner", icon: "image" },
             { id: "articles", label: "Bài viết & Tin tức", icon: "newspaper" },
             { id: "vouchers", label: "Mã ưu đãi", icon: "ticket" },
-            { id: "reviews", label: "Đánh giá khách hàng", icon: "star" },
+            { id: "reviews", label: "Đánh giá khách hàng", icon: "star", badge: (Array.isArray(reviews) ? reviews.filter(r => !r.reply).length : 0) || null },
             { id: "comments", label: "Hỏi đáp & Bình luận", icon: "message-square", badge: comments.filter(c => !c.reply).length || null },
             { id: "payments", label: "Thanh toán & QR", icon: "qr-code" },
             { id: "settings", label: "Cấu hình cửa hàng", icon: "settings" },
@@ -3715,39 +3751,145 @@ Hãy đảm bảo file "start_backend.bat" đang chạy.`);
             </div>
           )}
 
-          {activeTab === "reviews" && (
+          {activeTab === "reviews" && (() => {
+            const reviewList = Array.isArray(reviews) ? reviews : Object.values(reviews).flat();
+            return (
             <div className="space-y-4">
-              <div>
-                <h3 className="font-extrabold text-sm text-[#141923]">Kiểm duyệt Nhận xét Khách hàng</h3>
-                <p className="text-xs text-[#707783]">Xem và kiểm duyệt đánh giá gửi từ trang web bán hàng</p>
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div>
+                  <h3 className="font-extrabold text-sm text-[#141923]">Kiểm duyệt Nhận xét Khách hàng</h3>
+                  <p className="text-xs text-[#707783]">Xem và kiểm duyệt đánh giá gửi từ trang web bán hàng</p>
+                </div>
+                <span className="text-xs font-bold text-[#0275A9] bg-[#EAF4FA] px-3 py-1 rounded-full self-start sm:self-auto">
+                  {reviewList.length} đánh giá ({reviewList.filter(r => !r.reply).length} chưa phản hồi)
+                </span>
               </div>
 
               <div className="bg-white rounded-2xl border border-[#E5E8EC] overflow-hidden shadow-2xs divide-y divide-[#E5E8EC]">
-                {(Array.isArray(reviews) ? reviews : Object.values(reviews).flat()).length === 0 ? (
+                {reviewList.length === 0 ? (
                   <div className="p-8 text-center text-[#707783] text-xs">Chưa có đánh giá nào từ khách hàng.</div>
                 ) : (
-                  (Array.isArray(reviews) ? reviews : Object.values(reviews).flat()).map((rev) => (
-                    <div key={rev.id} className="p-4 flex items-start justify-between gap-4">
-                      <div>
-                        <div className="flex items-center gap-2 mb-1">
+                  reviewList.map((rev) => (
+                    <div key={rev.id} className="p-5 space-y-3">
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-[#F1F3F5] pb-2.5">
+                        <div className="flex flex-wrap items-center gap-2">
                           <span className="font-bold text-xs text-[#141923]">{rev.author}</span>
+                          {rev.phone && (
+                            <span className="text-[11px] text-[#707783] bg-[#F5F6F8] px-2 py-0.5 rounded font-mono">
+                              SĐT: {rev.phone}
+                            </span>
+                          )}
+                          {rev.verified && (
+                            <span className="text-[10px] font-bold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full">
+                              Đã mua hàng
+                            </span>
+                          )}
                           <span className="text-[11px] text-amber-500 font-bold">⭐ {rev.rating}/5</span>
                           <span className="text-[10px] text-[#707783]">• {rev.date}</span>
                         </div>
-                        <p className="text-xs text-[#707783]">{rev.content}</p>
+                        <div className="flex items-center gap-2 shrink-0">
+                          {rev.productImg && (
+                            <img
+                              src={rev.productImg}
+                              alt={rev.productName || rev.productId}
+                              className="w-7 h-7 object-contain rounded border border-[#E5E8EC] bg-white p-0.5"
+                              onError={(e) => { e.target.style.display = "none"; }}
+                            />
+                          )}
+                          <span
+                            className={`text-[11px] font-bold px-2.5 py-0.5 rounded-full truncate max-w-xs ${
+                              rev.productName
+                                ? "text-[#0275A9] bg-[#EAF4FA]"
+                                : "text-rose-700 bg-rose-50"
+                            }`}
+                            title={rev.productName || rev.productId}
+                          >
+                            SP: {rev.productName || `Đã xóa (${rev.productId})`}
+                          </span>
+                          <button
+                            onClick={() => handleDeleteReview(rev.id)}
+                            className="px-3 py-1 bg-rose-50 text-rose-600 hover:bg-rose-100 rounded-lg text-xs font-bold transition cursor-pointer"
+                          >
+                            Xóa vi phạm
+                          </button>
+                        </div>
                       </div>
-                      <button
-                        onClick={() => handleDeleteReview(rev.id)}
-                        className="px-3 py-1 bg-rose-50 text-rose-600 hover:bg-rose-100 rounded-lg text-xs font-bold transition cursor-pointer"
-                      >
-                        Xóa vi phạm
-                      </button>
+                      <p className="text-xs text-[#141923] leading-relaxed pl-2 border-l-2 border-amber-400">
+                        {rev.content}
+                      </p>
+
+                      {replyingReviewId === rev.id ? (
+                        <div className="p-3 bg-[#F8FAFC] border border-[#CBD5E1] rounded-xl space-y-2">
+                          <label className="block text-xs font-bold text-[#0275A9]">
+                            Nhập phản hồi của nét. Store Manager cho đánh giá này:
+                          </label>
+                          <textarea
+                            rows="3"
+                            value={reviewReplyContent}
+                            onChange={(e) => setReviewReplyContent(e.target.value)}
+                            placeholder="Dạ nét. cảm ơn anh/chị đã tin tưởng mua sắm..."
+                            className="w-full p-2.5 text-xs border border-[#CBD5E1] rounded-lg focus:border-[#0275A9] focus:outline-none bg-white"
+                          />
+                          <div className="flex justify-end gap-2">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setReplyingReviewId(null);
+                                setReviewReplyContent("");
+                              }}
+                              className="px-3 py-1.5 text-xs text-[#707783] hover:bg-[#E5E8EC] rounded-lg font-bold transition cursor-pointer"
+                            >
+                              Hủy
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleReplyReview(rev.id)}
+                              className="px-4 py-1.5 bg-[#0275A9] hover:bg-[#02628e] text-white text-xs font-bold rounded-lg transition cursor-pointer"
+                            >
+                              Gửi phản hồi
+                            </button>
+                          </div>
+                        </div>
+                      ) : rev.reply ? (
+                        <div className="p-3 bg-[#EAF4FA]/60 border border-[#0275A9]/20 rounded-xl space-y-1.5 text-xs">
+                          <div className="flex items-center justify-between text-[#0275A9] font-bold text-[11px]">
+                            <span className="flex items-center gap-1.5">
+                              <Icon name="check-circle" className="w-3.5 h-3.5 text-emerald-600" />
+                              <span>nét. Quản trị viên phản hồi:</span>
+                            </span>
+                            <button
+                              onClick={() => {
+                                setReplyingReviewId(rev.id);
+                                setReviewReplyContent(rev.reply);
+                              }}
+                              className="text-[10px] text-[#0275A9] hover:underline cursor-pointer"
+                            >
+                              Sửa phản hồi
+                            </button>
+                          </div>
+                          <p className="text-[#141923] text-xs leading-relaxed">{rev.reply}</p>
+                        </div>
+                      ) : (
+                        <div>
+                          <button
+                            onClick={() => {
+                              setReplyingReviewId(rev.id);
+                              setReviewReplyContent("");
+                            }}
+                            className="px-3 py-1.5 bg-[#0275A9] hover:bg-[#02628e] text-white text-xs font-bold rounded-lg transition cursor-pointer flex items-center gap-1.5"
+                          >
+                            <Icon name="message-square" className="w-3.5 h-3.5" />
+                            <span>Phản hồi khách</span>
+                          </button>
+                        </div>
+                      )}
                     </div>
                   ))
                 )}
               </div>
             </div>
-          )}
+            );
+          })()}
 
           {/* TAB: HỎI ĐÁP & BÌNH LUẬN KHÁCH HÀNG */}
           {activeTab === "comments" && (
@@ -3800,26 +3942,7 @@ Hãy đảm bảo file "start_backend.bat" đang chạy.`);
                       </p>
 
                       {/* Store Reply or Reply Form */}
-                      {cm.reply ? (
-                        <div className="p-3 bg-[#EAF4FA]/60 border border-[#0275A9]/20 rounded-xl space-y-1.5 text-xs">
-                          <div className="flex items-center justify-between text-[#0275A9] font-bold text-[11px]">
-                            <span className="flex items-center gap-1.5">
-                              <Icon name="check-circle" className="w-3.5 h-3.5 text-emerald-600" />
-                              <span>nét. Quản trị viên phản hồi:</span>
-                            </span>
-                            <button
-                              onClick={() => {
-                                setReplyingCommentId(cm.id);
-                                setReplyContent(cm.reply);
-                              }}
-                              className="text-[10px] text-[#0275A9] hover:underline cursor-pointer"
-                            >
-                              Sửa câu trả lời
-                            </button>
-                          </div>
-                          <p className="text-[#141923] text-xs leading-relaxed">{cm.reply}</p>
-                        </div>
-                      ) : replyingCommentId === cm.id ? (
+                      {replyingCommentId === cm.id ? (
                         <div className="p-3 bg-[#F8FAFC] border border-[#CBD5E1] rounded-xl space-y-2">
                           <label className="block text-xs font-bold text-[#0275A9]">
                             Nhập câu trả lời của nét. Store Manager:
@@ -3850,6 +3973,25 @@ Hãy đảm bảo file "start_backend.bat" đang chạy.`);
                               Gửi phản hồi
                             </button>
                           </div>
+                        </div>
+                      ) : cm.reply ? (
+                        <div className="p-3 bg-[#EAF4FA]/60 border border-[#0275A9]/20 rounded-xl space-y-1.5 text-xs">
+                          <div className="flex items-center justify-between text-[#0275A9] font-bold text-[11px]">
+                            <span className="flex items-center gap-1.5">
+                              <Icon name="check-circle" className="w-3.5 h-3.5 text-emerald-600" />
+                              <span>nét. Quản trị viên phản hồi:</span>
+                            </span>
+                            <button
+                              onClick={() => {
+                                setReplyingCommentId(cm.id);
+                                setReplyContent(cm.reply);
+                              }}
+                              className="text-[10px] text-[#0275A9] hover:underline cursor-pointer"
+                            >
+                              Sửa câu trả lời
+                            </button>
+                          </div>
+                          <p className="text-[#141923] text-xs leading-relaxed">{cm.reply}</p>
                         </div>
                       ) : (
                         <div>

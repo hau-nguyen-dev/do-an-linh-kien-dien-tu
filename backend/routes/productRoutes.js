@@ -20,14 +20,27 @@ const router = Router();
 // GET /api/products/reviews (Lấy toàn bộ đánh giá từ bảng danh_gia độc lập cho Admin)
 router.get('/reviews', (req, res) => {
   const rows = db.prepare(`
-    SELECT d.id, d.ma_san_pham as productId, s.ten as productName,
+    SELECT d.id, d.ma_san_pham as productId, s.ten as productName, s.hinh_anh as productImg,
            d.tac_gia as author, d.so_dien_thoai as phone, d.so_sao as rating,
-           d.noi_dung as content, d.da_mua_hang as verified, d.ngay_tao as date
+           d.noi_dung as content, d.tra_loi_admin as reply, d.da_mua_hang as verified, d.ngay_tao as date
     FROM danh_gia d
     LEFT JOIN san_pham s ON d.ma_san_pham = s.id
     ORDER BY d.rowid DESC
   `).all();
-  res.json(rows.map((r) => ({ ...r, verified: Boolean(r.verified) })));
+  res.json(rows.map((r) => ({ ...r, reply: r.reply || '', verified: Boolean(r.verified) })));
+});
+
+// PUT /api/products/reviews/:revId/reply (Admin phản hồi đánh giá khách hàng)
+router.put('/reviews/:revId/reply', (req, res) => {
+  const revId = req.params.revId;
+  const cleanReply = (req.body?.reply || req.body?.traLoiAdmin || '').trim();
+  const existing = db.prepare('SELECT id FROM danh_gia WHERE id = ?').get(revId);
+  if (!existing) {
+    return res.status(404).json({ error: 'Không tìm thấy đánh giá' });
+  }
+  db.prepare('UPDATE danh_gia SET tra_loi_admin = ? WHERE id = ?').run(cleanReply, revId);
+  const updated = db.prepare('SELECT * FROM danh_gia WHERE id = ?').get(revId);
+  res.json({ success: true, review: formatReview(updated) });
 });
 
 // DELETE /api/products/reviews/:revId (Xóa đánh giá khỏi bảng danh_gia trong SQLite)
@@ -78,7 +91,13 @@ router.get('/', (req, res) => {
   } else {
     rows = db.prepare('SELECT * FROM san_pham ORDER BY rowid ASC').all();
   }
-  res.json(rows.map((r) => formatProduct(r)));
+  const allRevs = db.prepare('SELECT * FROM danh_gia ORDER BY rowid DESC').all();
+  const revsByProduct = {};
+  for (const rev of allRevs) {
+    if (!revsByProduct[rev.ma_san_pham]) revsByProduct[rev.ma_san_pham] = [];
+    revsByProduct[rev.ma_san_pham].push(formatReview(rev));
+  }
+  res.json(rows.map((r) => formatProduct(r, revsByProduct[r.id] || [])));
 });
 
 // GET /api/products/:id (Lấy chi tiết sản phẩm và nạp danh sách đánh giá từ bảng danh_gia)
@@ -94,6 +113,17 @@ router.get('/:id', (req, res) => {
   const reviews = revRows.map(formatReview);
 
   res.json(formatProduct(row, reviews));
+});
+
+// GET /api/products/:id/reviews (Nạp đánh giá thực tế cho 1 sản phẩm)
+router.get('/:id/reviews', (req, res) => {
+  const idOrSlug = req.params.id;
+  const row = db.prepare('SELECT id FROM san_pham WHERE id = ? OR duong_dan = ?').get(idOrSlug, idOrSlug);
+  if (!row) {
+    return res.status(404).json({ message: 'Không tìm thấy sản phẩm' });
+  }
+  const revRows = db.prepare('SELECT * FROM danh_gia WHERE ma_san_pham = ? ORDER BY rowid DESC').all(row.id);
+  res.json(revRows.map(formatReview));
 });
 
 // POST /api/products/:id/reviews (Khách hàng gửi nhận xét mới vào bảng danh_gia trong SQLite)
@@ -354,6 +384,9 @@ router.put('/:id', (req, res) => {
 // DELETE /api/products/:id
 router.delete('/:id', (req, res) => {
   const id = req.params.id;
+  // Xóa tường minh dữ liệu liên quan để tránh sót đánh giá/bình luận mồ côi
+  db.prepare('DELETE FROM danh_gia WHERE ma_san_pham = ?').run(id);
+  db.prepare('DELETE FROM binh_luan WHERE ma_san_pham = ?').run(id);
   db.prepare('DELETE FROM san_pham WHERE id = ?').run(id);
   res.json({ success: true, id });
 });

@@ -18,6 +18,16 @@ if (!existsSync(dbPath) && existsSync(seedPath)) {
 export const db = new DatabaseSync(dbPath);
 db.exec('PRAGMA foreign_keys = ON;');
 
+// Đảm bảo bảng danh_gia có cột tra_loi_admin để Admin phản hồi đánh giá
+try {
+  const cols = db.prepare('PRAGMA table_info(danh_gia)').all();
+  if (cols.length > 0 && !cols.some((c) => c.name === 'tra_loi_admin')) {
+    db.exec('ALTER TABLE danh_gia ADD COLUMN tra_loi_admin TEXT');
+  }
+} catch {
+  // Bỏ qua nếu bảng danh_gia chưa khởi tạo
+}
+
 export function safeJsonParse(str, fallback) {
   if (!str) return fallback;
   try {
@@ -36,6 +46,8 @@ export function formatReview(row) {
     phone: row.so_dien_thoai || '',
     rating: row.so_sao ?? 5,
     content: row.noi_dung,
+    reply: row.tra_loi_admin || '',
+    traLoiAdmin: row.tra_loi_admin || '',
     verified: Boolean(row.da_mua_hang ?? 1),
     date: row.ngay_tao,
   };

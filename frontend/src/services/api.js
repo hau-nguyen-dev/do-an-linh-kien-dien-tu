@@ -4,12 +4,16 @@
  */
 
 // Khi được Express phục vụ qua http(s) (local hoặc đã deploy) thì gọi API cùng origin;
-// khi mở file:/// hoặc chạy Vite dev (cổng 5173) thì trỏ về backend cổng 5000.
+// khi mở file:/// hoặc chạy Vite dev (cổng 5173) thì trỏ về backend cổng 5000
+// (dùng hostname hiện tại để hỗ trợ truy cập qua mạng LAN).
 function resolveApiBaseUrl() {
-  const isServedByBackend = typeof location !== 'undefined'
-    && location.protocol.startsWith('http')
-    && location.port !== '5173';
-  return isServedByBackend ? `${location.origin}/api` : 'http://localhost:5000/api';
+  const hasWindow = typeof window !== 'undefined';
+  const isServedByBackend = hasWindow
+    && window.location.protocol.startsWith('http')
+    && window.location.port !== '5173';
+  if (isServedByBackend) return `${window.location.origin}/api`;
+  const host = (hasWindow && window.location.hostname) || 'localhost';
+  return `http://${host}:5000/api`;
 }
 
 export const API_BASE_URL = resolveApiBaseUrl();
@@ -18,7 +22,7 @@ export const API_BASE_URL = resolveApiBaseUrl();
 export const AUTH_TOKEN_KEY = 'net_auth_token';
 
 export const API_CONFIG = {
-  // Bật kết nối Backend thật 100%
+  // Bật kết nối Backend thật 100% (tự động nhận LAN / Online / localhost)
   USE_BACKEND_API: true,
   BASE_URL: API_BASE_URL,
   TIMEOUT_MS: 10000,

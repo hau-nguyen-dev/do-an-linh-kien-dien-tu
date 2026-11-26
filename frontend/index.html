@@ -297,12 +297,16 @@ function parseRoute(hashString) {
  */
 
 // Khi được Express phục vụ qua http(s) (local hoặc đã deploy) thì gọi API cùng origin;
-// khi mở file:/// hoặc chạy Vite dev (cổng 5173) thì trỏ về backend cổng 5000.
+// khi mở file:/// hoặc chạy Vite dev (cổng 5173) thì trỏ về backend cổng 5000
+// (dùng hostname hiện tại để hỗ trợ truy cập qua mạng LAN).
 function resolveApiBaseUrl() {
-  const isServedByBackend = typeof location !== 'undefined'
-    && location.protocol.startsWith('http')
-    && location.port !== '5173';
-  return isServedByBackend ? `${location.origin}/api` : 'http://localhost:5000/api';
+  const hasWindow = typeof window !== 'undefined';
+  const isServedByBackend = hasWindow
+    && window.location.protocol.startsWith('http')
+    && window.location.port !== '5173';
+  if (isServedByBackend) return `${window.location.origin}/api`;
+  const host = (hasWindow && window.location.hostname) || 'localhost';
+  return `http://${host}:5000/api`;
 }
 
 const API_BASE_URL = resolveApiBaseUrl();
@@ -311,7 +315,7 @@ const API_BASE_URL = resolveApiBaseUrl();
 const AUTH_TOKEN_KEY = 'net_auth_token';
 
 const API_CONFIG = {
-  // Bật kết nối Backend thật 100%
+  // Bật kết nối Backend thật 100% (tự động nhận LAN / Online / localhost)
   USE_BACKEND_API: true,
   BASE_URL: API_BASE_URL,
   TIMEOUT_MS: 10000,
@@ -1939,14 +1943,14 @@ function OrderDetailModal({ order, isOpen, onClose, onCancelOrder, onReorder }) 
 
 
 function ReviewFormModal({ isOpen, onClose, product, onSubmitReview }) {
-  if (!isOpen || !product) return null;
-
   const [rating, setRating] = useState(5);
   const [hoverRating, setHoverRating] = useState(0);
   const [author, setAuthor] = useState("");
   const [phone, setPhone] = useState("");
   const [content, setContent] = useState("");
   const [verifiedBuyer, setVerifiedBuyer] = useState(true);
+
+  if (!isOpen || !product) return null;
 
   const handleSubmit = (e) => {
     e.preventDefault();
@@ -1966,6 +1970,11 @@ function ReviewFormModal({ isOpen, onClose, product, onSubmitReview }) {
     };
 
     onSubmitReview(product.id, newRev);
+    setAuthor("");
+    setPhone("");
+    setContent("");
+    setRating(5);
+    setHoverRating(0);
     onClose();
   };
 
@@ -2890,7 +2899,8 @@ function ProductDetailPage({ products = [], productId, onAddToCart, onToggleWish
   const [isReviewModalOpen, setIsReviewModalOpen] = useState(false);
   const [isInstallmentModalOpen, setIsInstallmentModalOpen] = useState(false);
 
-  // Real Comments & Q&A from SQLite
+  // Real Reviews & Comments from SQLite
+  const [sqlReviews, setSqlReviews] = useState(null);
   const [comments, setComments] = useState([]);
   const [commentAuthor, setCommentAuthor] = useState("");
   const [commentPhone, setCommentPhone] = useState("");
@@ -2912,19 +2922,34 @@ function ProductDetailPage({ products = [], productId, onAddToCart, onToggleWish
       setActiveImg(product.gallery?.[0] || product.img);
     }
     setQuantity(1);
+    setSqlReviews(null);
 
-    if (product?.id) {
-      fetch(`${API_BASE_URL}/comments?productId=${product.id}&status=approved`)
-        .then((res) => res.json())
-        .then((data) => { if (Array.isArray(data)) setComments(data); })
-        .catch((err) => console.warn("[PDP] Comments fetch error:", err));
-    }
     if (!settingsData) {
-      fetch(`${API_BASE_URL}/settings`)
+      fetch(`${API_CONFIG.BASE_URL}/settings`)
         .then((res) => res.json())
         .then((data) => { if (data) setSettingsData(data); })
         .catch((err) => console.warn("[PDP] Settings fetch error:", err));
     }
+
+    if (!product?.id) return;
+    const syncProductFeedback = () => {
+      fetch(`${API_CONFIG.BASE_URL}/products/${encodeURIComponent(product.id)}/reviews`)
+        .then((res) => (res.ok ? res.json() : null))
+        .then((data) => { if (Array.isArray(data)) setSqlReviews(data); })
+        .catch((err) => console.warn("[PDP] Reviews fetch error:", err));
+
+      fetch(`${API_CONFIG.BASE_URL}/comments?productId=${encodeURIComponent(product.id)}&status=approved`)
+        .then((res) => (res.ok ? res.json() : null))
+        .then((data) => { if (Array.isArray(data)) setComments(data); })
+        .catch((err) => console.warn("[PDP] Comments fetch error:", err));
+    };
+    syncProductFeedback();
+    const timer = setInterval(syncProductFeedback, 3000);
+    window.addEventListener("focus", syncProductFeedback);
+    return () => {
+      clearInterval(timer);
+      window.removeEventListener("focus", syncProductFeedback);
+    };
   }, [product?.id]);
 
   const handleSubmitComment = async (e) => {
@@ -2935,7 +2960,7 @@ function ProductDetailPage({ products = [], productId, onAddToCart, onToggleWish
     }
     setIsSubmittingComment(true);
     try {
-      const res = await fetch(`${API_BASE_URL}/comments`, {
+      const res = await fetch(`${API_CONFIG.BASE_URL}/comments`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -3013,8 +3038,11 @@ function ProductDetailPage({ products = [], productId, onAddToCart, onToggleWish
 
   // Review & Rating calculations (100% Real from SQLite Data, no fake numbers)
   const allReviews = useMemo(() => {
-    return [...(customReviews || []), ...(product.reviews || [])];
-  }, [customReviews, product.reviews]);
+    const baseReviews = sqlReviews !== null ? sqlReviews : (product.reviews || []);
+    const seen = new Set(baseReviews.map((r) => r.id));
+    const extras = (customReviews || []).filter((r) => !seen.has(r.id));
+    return [...extras, ...baseReviews];
+  }, [customReviews, product.reviews, sqlReviews]);
 
   const reviewCount = allReviews.length;
   const avgRating = useMemo(() => {
@@ -3097,6 +3125,7 @@ function ProductDetailPage({ products = [], productId, onAddToCart, onToggleWish
         onClose={() => setIsReviewModalOpen(false)}
         product={product}
         onSubmitReview={(prodId, rev) => {
+          setSqlReviews((prev) => [rev, ...(prev || [])]);
           if (onAddReview) onAddReview(prodId, rev);
         }}
       />
@@ -3443,6 +3472,15 @@ function ProductDetailPage({ products = [], productId, onAddToCart, onToggleWish
                   ))}
                 </div>
                 <p className="text-xs text-[#334155] leading-relaxed">{rev.content}</p>
+                {rev.reply && (
+                  <div className="p-3 bg-[#EAF4FA] border border-[#0275A9]/20 rounded-xl space-y-1 text-xs">
+                    <div className="flex items-center gap-1.5 font-bold text-[#0275A9] text-[11px]">
+                      <Icon name="shield-check" className="w-3.5 h-3.5 text-[#0275A9]" />
+                      <span>nét. Quản trị viên phản hồi:</span>
+                    </div>
+                    <p className="text-[#141923] leading-relaxed text-xs">{rev.reply}</p>
+                  </div>
+                )}
               </div>
             ))}
           </div>
@@ -4460,7 +4498,14 @@ function App() {
     const refreshData = () => {
       productService.getAll()
         .then((data) => {
-          if (data && data.length > 0) setProducts(data);
+          if (data && data.length > 0) {
+            setProducts(data);
+            // Xóa cache review cục bộ cũ để đồng bộ tuyệt đối với SQLite (tránh sót đánh giá đã xóa)
+            setProductReviews((prev) => (Object.keys(prev).length > 0 ? {} : prev));
+            if (Object.keys(getStorage("net_custom_reviews", {})).length > 0) {
+              setStorage("net_custom_reviews", {});
+            }
+          }
         })
         .catch((err) => console.warn('[App] Auto-refresh products error:', err));
 
@@ -4523,16 +4568,16 @@ function App() {
       if (updated) {
         setProducts((prev) => prev.map((p) => (p.id === productId ? updated : p)));
       }
+      showToast("Cảm ơn bạn! Đánh giá đã được xuất bản trên nét.", "success");
     } catch (err) {
       console.warn('[App] Lưu review lên SQLite thất bại, chuyển lưu cục bộ:', err);
+      setProductReviews((prev) => {
+        const updated = { ...prev, [productId]: [newReview, ...(prev[productId] || [])] };
+        setStorage("net_custom_reviews", updated);
+        return updated;
+      });
+      showToast("Cảm ơn bạn! Đánh giá đã được lưu tạm cục bộ.", "info");
     }
-    setProductReviews((prev) => {
-      const updated = { ...prev, [productId]: [newReview, ...(prev[productId] || [])] };
-      setStorage("net_custom_reviews", updated);
-      return updated;
-    });
-    showToast("Cảm ơn bạn đã gửi đánh giá!", "success");
-    showToast("Cảm ơn bạn! Đánh giá đã được xuất bản trên nét.", "success");
   };
 
   useEffect(() => setStorage("net_cart", cart), [cart]);
@@ -4742,7 +4787,12 @@ function App() {
           />
         )}
 
-        {currentRoute.page === "pdp" && (
+        {currentRoute.page === "pdp" && (() => {
+          const pdpProduct = products.find(
+            (p) => p.id === currentRoute.productId || p.slug === currentRoute.productId
+          );
+          const pdpKey = pdpProduct?.id || currentRoute.productId;
+          return (
           <ProductDetailPage
             products={products}
             productId={currentRoute.productId}
@@ -4751,11 +4801,12 @@ function App() {
             wishlist={wishlist}
             onNavigate={navigate}
             onShowToast={showToast}
-            customReviews={productReviews[currentRoute.productId] || []}
+            customReviews={productReviews[pdpKey] || []}
             onAddReview={handleAddReview}
             storeSettings={storeSettings}
           />
-        )}
+          );
+        })()}
 
         {currentRoute.page === "category" && (
           <CategoryPage

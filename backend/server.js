@@ -1,6 +1,7 @@
 import './config/env.js';
 import express from 'express';
 import cors from 'cors';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import productRoutes from './routes/productRoutes.js';
@@ -72,7 +73,16 @@ app.use((err, req, res, next) => {
   res.status(500).json({ error: 'Lỗi máy chủ nội bộ', details });
 });
 
-// Start Server
-app.listen(PORT, () => {
+// Start Server (Bind 0.0.0.0 de ho tro mang LAN & moi truong Online)
+app.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 NÉT. Express Backend Server running on http://localhost:${PORT}`);
+  const nets = os.networkInterfaces();
+  for (const name of Object.keys(nets)) {
+    for (const net of nets[name] || []) {
+      if (net.family === 'IPv4' && !net.internal) {
+        console.log(`🌐 LAN Storefront: http://${net.address}:${PORT}/index.html`);
+        console.log(`🌐 LAN Admin:      http://${net.address}:${PORT}/admin.html`);
+      }
+    }
+  }
 });
