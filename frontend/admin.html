@@ -2377,6 +2377,8 @@ function AdminApp() {
   const [backendStatus, setBackendStatus] = useState("checking"); // "online" | "offline" | "checking"
   const [vouchers, setVouchers] = useState([]);
   const [reviews, setReviews] = useState([]);
+  const [replyingReviewId, setReplyingReviewId] = useState(null);
+  const [reviewReplyContent, setReviewReplyContent] = useState("");
   const [comments, setComments] = useState([]);
   const [replyingCommentId, setReplyingCommentId] = useState(null);
   const [replyContent, setReplyContent] = useState("");
@@ -2398,7 +2400,10 @@ function AdminApp() {
   const [editingArticle, setEditingArticle] = useState(null);
   const [isArticleModalOpen, setIsArticleModalOpen] = useState(false);
 
-  const BACKEND_URL = "http://localhost:5000/api";
+  const BACKEND_URL =
+    window.location.protocol.startsWith("http") && window.location.port !== "5173"
+      ? `${window.location.origin}/api`
+      : `http://${window.location.hostname || "localhost"}:5000/api`;
 
   // Nạp danh sách đơn hàng trực tiếp từ Database SQLite
   const fetchOrdersFromDb = async () => {
@@ -2455,6 +2460,14 @@ function AdminApp() {
     const timer = setInterval(() => {
       checkBackendHealth();
       fetchOrdersFromDb();
+      fetch(`${BACKEND_URL}/products/reviews`)
+        .then((res) => res.json())
+        .then((data) => { if (Array.isArray(data)) setReviews(data); })
+        .catch(() => {});
+      fetch(`${BACKEND_URL}/comments`)
+        .then((res) => res.json())
+        .then((data) => { if (Array.isArray(data)) setComments(data); })
+        .catch(() => {});
     }, 5000);
     return () => clearInterval(timer);
   }, []);
@@ -2528,6 +2541,32 @@ function AdminApp() {
   const showToast = (message, type = "success") => {
     setToast({ message, type });
     setTimeout(() => setToast(null), 3000);
+  };
+
+  const handleReplyReview = async (reviewId) => {
+    if (!reviewReplyContent.trim()) {
+      showToast("Vui lòng nhập nội dung phản hồi", "info");
+      return;
+    }
+    try {
+      const res = await fetch(`${BACKEND_URL}/products/reviews/${encodeURIComponent(reviewId)}/reply`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reply: reviewReplyContent.trim() })
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const clean = reviewReplyContent.trim();
+      setReviews((prev) =>
+        Array.isArray(prev)
+          ? prev.map((r) => (r.id === reviewId ? { ...r, reply: clean } : r))
+          : prev
+      );
+      setReplyingReviewId(null);
+      setReviewReplyContent("");
+      showToast("Đã gửi phản hồi đánh giá thành công!", "success");
+    } catch (err) {
+      showToast("Lỗi khi gửi phản hồi: " + err.message, "rose");
+    }
   };
 
   const handleReplyComment = async (commentId) => {
@@ -2867,7 +2906,7 @@ Hãy đảm bảo file "start_backend.bat" đang chạy.`);
             { id: "banners", label: "Chiến dịch & Banner", icon: "image" },
             { id: "articles", label: "Bài viết & Tin tức", icon: "newspaper" },
             { id: "vouchers", label: "Mã ưu đãi", icon: "ticket" },
-            { id: "reviews", label: "Đánh giá khách hàng", icon: "star" },
+            { id: "reviews", label: "Đánh giá khách hàng", icon: "star", badge: (Array.isArray(reviews) ? reviews.filter(r => !r.reply).length : 0) || null },
             { id: "comments", label: "Hỏi đáp & Bình luận", icon: "message-square", badge: comments.filter(c => !c.reply).length || null },
             { id: "settings", label: "Cấu hình cửa hàng", icon: "settings" },
           ].map((item) => {
@@ -3017,12 +3056,7 @@ Hãy đảm bảo file "start_backend.bat" đang chạy.`);
                     {orders.slice(0, 5).map((o) => (
                       <div key={o.id} className="py-3 flex items-center justify-between gap-4 text-xs">
                         <div>
-                          <div className="font-bold text-[#141923] flex items-center gap-1.5">
-                            <span>#{o.id} — {o.customerName}</span>
-                            <span className="text-[10px] bg-emerald-50 text-emerald-700 font-bold px-1.5 py-0.5 rounded border border-emerald-200">
-                              Hội viên
-                            </span>
-                          </div>
+                          <div className="font-bold text-[#141923]">#{o.id} — {o.customerName}</div>
                           <div className="text-[#707783] text-[11px] mt-0.5">{o.phone} · {formatDate(o.createdAt)}</div>
                         </div>
                         <div className="flex items-center gap-4">
@@ -3113,36 +3147,14 @@ Hãy đảm bảo file "start_backend.bat" đang chạy.`);
                         <tr key={o.id} className="hover:bg-[#F8FAFC] transition">
                           <td className="p-4 font-bold text-[#141923]">{formatOrderId(o.id)}</td>
                           <td className="p-4">
-                            <div className="font-bold text-[#141923] flex items-center gap-1.5">
-                              <span>{o.customerName}</span>
-                              <span className="text-[10px] bg-emerald-50 text-emerald-700 font-bold px-1.5 py-0.5 rounded border border-emerald-200">
-                                Hội viên
-                              </span>
-                            </div>
+                            <div className="font-bold text-[#141923]">{o.customerName}</div>
                             <div className="text-[#707783] text-[11px]">{o.phone}</div>
                           </td>
                           <td className="p-4 text-[#707783]">{formatDate(o.createdAt)}</td>
-                          <td className="p-4 text-[11px] font-bold">
-                            {(o.paymentMethod === "vietqr" || String(o.phuongThucThanhToan || '').toLowerCase().includes('vietqr')) ? (
-                              <span className="inline-flex items-center gap-1 text-sky-700 bg-sky-50 px-2.5 py-1 rounded-full border border-sky-200 uppercase">
-                                VietQR ⚡
-                              </span>
-                            ) : (
-                              <span className="inline-flex items-center gap-1 text-amber-800 bg-amber-50 px-2.5 py-1 rounded-full border border-amber-200 uppercase">
-                                COD 💵
-                              </span>
-                            )}
+                          <td className="p-4 uppercase text-[11px] font-bold text-[#707783]">
+                            {o.paymentMethod === "vietqr" ? "VietQR ⚡" : "COD 💵"}
                           </td>
-                          <td className="p-4 font-black text-[#0275A9]">
-                            <div>{formatVND(o.total || 0)}</div>
-                            {(o.voucherCode || o.maVoucher) && (
-                              <div className="text-[10px] text-rose-600 font-semibold flex items-center gap-1 mt-0.5">
-                                <span className="px-1.5 py-0.5 bg-rose-50 border border-rose-200 rounded text-[9px] uppercase tracking-wide">
-                                  {o.voucherCode || o.maVoucher}
-                                </span>
-                              </div>
-                            )}
-                          </td>
+                          <td className="p-4 font-black text-[#0275A9]">{formatVND(o.total || 0)}</td>
                           <td className="p-4">
                             <OrderStatusBadge status={o.status} statusCode={o.statusCode} />
                           </td>
@@ -3349,39 +3361,145 @@ Hãy đảm bảo file "start_backend.bat" đang chạy.`);
             </div>
           )}
 
-          {activeTab === "reviews" && (
+          {activeTab === "reviews" && (() => {
+            const reviewList = Array.isArray(reviews) ? reviews : Object.values(reviews).flat();
+            return (
             <div className="space-y-4">
-              <div>
-                <h3 className="font-extrabold text-sm text-[#141923]">Kiểm duyệt Nhận xét Khách hàng</h3>
-                <p className="text-xs text-[#707783]">Xem và kiểm duyệt đánh giá gửi từ trang web bán hàng</p>
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div>
+                  <h3 className="font-extrabold text-sm text-[#141923]">Kiểm duyệt Nhận xét Khách hàng</h3>
+                  <p className="text-xs text-[#707783]">Xem và kiểm duyệt đánh giá gửi từ trang web bán hàng</p>
+                </div>
+                <span className="text-xs font-bold text-[#0275A9] bg-[#EAF4FA] px-3 py-1 rounded-full self-start sm:self-auto">
+                  {reviewList.length} đánh giá ({reviewList.filter(r => !r.reply).length} chưa phản hồi)
+                </span>
               </div>
 
               <div className="bg-white rounded-2xl border border-[#E5E8EC] overflow-hidden shadow-2xs divide-y divide-[#E5E8EC]">
-                {(Array.isArray(reviews) ? reviews : Object.values(reviews).flat()).length === 0 ? (
+                {reviewList.length === 0 ? (
                   <div className="p-8 text-center text-[#707783] text-xs">Chưa có đánh giá nào từ khách hàng.</div>
                 ) : (
-                  (Array.isArray(reviews) ? reviews : Object.values(reviews).flat()).map((rev) => (
-                    <div key={rev.id} className="p-4 flex items-start justify-between gap-4">
-                      <div>
-                        <div className="flex items-center gap-2 mb-1">
+                  reviewList.map((rev) => (
+                    <div key={rev.id} className="p-5 space-y-3">
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-[#F1F3F5] pb-2.5">
+                        <div className="flex flex-wrap items-center gap-2">
                           <span className="font-bold text-xs text-[#141923]">{rev.author}</span>
+                          {rev.phone && (
+                            <span className="text-[11px] text-[#707783] bg-[#F5F6F8] px-2 py-0.5 rounded font-mono">
+                              SĐT: {rev.phone}
+                            </span>
+                          )}
+                          {rev.verified && (
+                            <span className="text-[10px] font-bold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full">
+                              Đã mua hàng
+                            </span>
+                          )}
                           <span className="text-[11px] text-amber-500 font-bold">⭐ {rev.rating}/5</span>
                           <span className="text-[10px] text-[#707783]">• {rev.date}</span>
                         </div>
-                        <p className="text-xs text-[#707783]">{rev.content}</p>
+                        <div className="flex items-center gap-2 shrink-0">
+                          {rev.productImg && (
+                            <img
+                              src={rev.productImg}
+                              alt={rev.productName || rev.productId}
+                              className="w-7 h-7 object-contain rounded border border-[#E5E8EC] bg-white p-0.5"
+                              onError={(e) => { e.target.style.display = "none"; }}
+                            />
+                          )}
+                          <span
+                            className={`text-[11px] font-bold px-2.5 py-0.5 rounded-full truncate max-w-xs ${
+                              rev.productName
+                                ? "text-[#0275A9] bg-[#EAF4FA]"
+                                : "text-rose-700 bg-rose-50"
+                            }`}
+                            title={rev.productName || rev.productId}
+                          >
+                            SP: {rev.productName || `Đã xóa (${rev.productId})`}
+                          </span>
+                          <button
+                            onClick={() => handleDeleteReview(rev.id)}
+                            className="px-3 py-1 bg-rose-50 text-rose-600 hover:bg-rose-100 rounded-lg text-xs font-bold transition cursor-pointer"
+                          >
+                            Xóa vi phạm
+                          </button>
+                        </div>
                       </div>
-                      <button
-                        onClick={() => handleDeleteReview(rev.id)}
-                        className="px-3 py-1 bg-rose-50 text-rose-600 hover:bg-rose-100 rounded-lg text-xs font-bold transition cursor-pointer"
-                      >
-                        Xóa vi phạm
-                      </button>
+                      <p className="text-xs text-[#141923] leading-relaxed pl-2 border-l-2 border-amber-400">
+                        {rev.content}
+                      </p>
+
+                      {replyingReviewId === rev.id ? (
+                        <div className="p-3 bg-[#F8FAFC] border border-[#CBD5E1] rounded-xl space-y-2">
+                          <label className="block text-xs font-bold text-[#0275A9]">
+                            Nhập phản hồi của nét. Store Manager cho đánh giá này:
+                          </label>
+                          <textarea
+                            rows="3"
+                            value={reviewReplyContent}
+                            onChange={(e) => setReviewReplyContent(e.target.value)}
+                            placeholder="Dạ nét. cảm ơn anh/chị đã tin tưởng mua sắm..."
+                            className="w-full p-2.5 text-xs border border-[#CBD5E1] rounded-lg focus:border-[#0275A9] focus:outline-none bg-white"
+                          />
+                          <div className="flex justify-end gap-2">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setReplyingReviewId(null);
+                                setReviewReplyContent("");
+                              }}
+                              className="px-3 py-1.5 text-xs text-[#707783] hover:bg-[#E5E8EC] rounded-lg font-bold transition cursor-pointer"
+                            >
+                              Hủy
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleReplyReview(rev.id)}
+                              className="px-4 py-1.5 bg-[#0275A9] hover:bg-[#02628e] text-white text-xs font-bold rounded-lg transition cursor-pointer"
+                            >
+                              Gửi phản hồi
+                            </button>
+                          </div>
+                        </div>
+                      ) : rev.reply ? (
+                        <div className="p-3 bg-[#EAF4FA]/60 border border-[#0275A9]/20 rounded-xl space-y-1.5 text-xs">
+                          <div className="flex items-center justify-between text-[#0275A9] font-bold text-[11px]">
+                            <span className="flex items-center gap-1.5">
+                              <Icon name="check-circle" className="w-3.5 h-3.5 text-emerald-600" />
+                              <span>nét. Quản trị viên phản hồi:</span>
+                            </span>
+                            <button
+                              onClick={() => {
+                                setReplyingReviewId(rev.id);
+                                setReviewReplyContent(rev.reply);
+                              }}
+                              className="text-[10px] text-[#0275A9] hover:underline cursor-pointer"
+                            >
+                              Sửa phản hồi
+                            </button>
+                          </div>
+                          <p className="text-[#141923] text-xs leading-relaxed">{rev.reply}</p>
+                        </div>
+                      ) : (
+                        <div>
+                          <button
+                            onClick={() => {
+                              setReplyingReviewId(rev.id);
+                              setReviewReplyContent("");
+                            }}
+                            className="px-3 py-1.5 bg-[#0275A9] hover:bg-[#02628e] text-white text-xs font-bold rounded-lg transition cursor-pointer flex items-center gap-1.5"
+                          >
+                            <Icon name="message-square" className="w-3.5 h-3.5" />
+                            <span>Phản hồi khách</span>
+                          </button>
+                        </div>
+                      )}
                     </div>
                   ))
                 )}
               </div>
             </div>
-          )}
+            );
+          })()}
 
           {/* TAB: HỎI ĐÁP & BÌNH LUẬN KHÁCH HÀNG */}
           {activeTab === "comments" && (
@@ -3434,26 +3552,7 @@ Hãy đảm bảo file "start_backend.bat" đang chạy.`);
                       </p>
 
                       {/* Store Reply or Reply Form */}
-                      {cm.reply ? (
-                        <div className="p-3 bg-[#EAF4FA]/60 border border-[#0275A9]/20 rounded-xl space-y-1.5 text-xs">
-                          <div className="flex items-center justify-between text-[#0275A9] font-bold text-[11px]">
-                            <span className="flex items-center gap-1.5">
-                              <Icon name="check-circle" className="w-3.5 h-3.5 text-emerald-600" />
-                              <span>nét. Quản trị viên phản hồi:</span>
-                            </span>
-                            <button
-                              onClick={() => {
-                                setReplyingCommentId(cm.id);
-                                setReplyContent(cm.reply);
-                              }}
-                              className="text-[10px] text-[#0275A9] hover:underline cursor-pointer"
-                            >
-                              Sửa câu trả lời
-                            </button>
-                          </div>
-                          <p className="text-[#141923] text-xs leading-relaxed">{cm.reply}</p>
-                        </div>
-                      ) : replyingCommentId === cm.id ? (
+                      {replyingCommentId === cm.id ? (
                         <div className="p-3 bg-[#F8FAFC] border border-[#CBD5E1] rounded-xl space-y-2">
                           <label className="block text-xs font-bold text-[#0275A9]">
                             Nhập câu trả lời của nét. Store Manager:
@@ -3484,6 +3583,25 @@ Hãy đảm bảo file "start_backend.bat" đang chạy.`);
                               Gửi phản hồi
                             </button>
                           </div>
+                        </div>
+                      ) : cm.reply ? (
+                        <div className="p-3 bg-[#EAF4FA]/60 border border-[#0275A9]/20 rounded-xl space-y-1.5 text-xs">
+                          <div className="flex items-center justify-between text-[#0275A9] font-bold text-[11px]">
+                            <span className="flex items-center gap-1.5">
+                              <Icon name="check-circle" className="w-3.5 h-3.5 text-emerald-600" />
+                              <span>nét. Quản trị viên phản hồi:</span>
+                            </span>
+                            <button
+                              onClick={() => {
+                                setReplyingCommentId(cm.id);
+                                setReplyContent(cm.reply);
+                              }}
+                              className="text-[10px] text-[#0275A9] hover:underline cursor-pointer"
+                            >
+                              Sửa câu trả lời
+                            </button>
+                          </div>
+                          <p className="text-[#141923] text-xs leading-relaxed">{cm.reply}</p>
                         </div>
                       ) : (
                         <div>
@@ -3818,110 +3936,6 @@ Hãy đảm bảo file "start_backend.bat" đang chạy.`);
                 </button>
               </div>
 
-              {/* Cấu hình Tài khoản Ngân hàng (VietQR) */}
-              <div className="bg-white rounded-2xl border border-[#E5E8EC] p-6 shadow-2xs space-y-4">
-                <div className="flex items-center justify-between pb-2 border-b border-[#E5E8EC]">
-                  <div>
-                    <h4 className="font-extrabold text-sm text-[#141923]">Cấu hình Tài khoản Ngân hàng (Mã VietQR Thanh Toán)</h4>
-                    <p className="text-xs text-[#707783] mt-0.5">Khách hàng khi chọn thanh toán VietQR sẽ quét mã chuyển thẳng vào tài khoản ngân hàng này.</p>
-                  </div>
-                  <span className="text-[11px] bg-sky-50 text-[#0275A9] font-bold px-3 py-1 rounded-full border border-sky-200">
-                    Napas 247 · Tự động sinh mã VietQR
-                  </span>
-                </div>
-
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 text-xs">
-                  <div>
-                    <label className="font-bold text-[#141923] block mb-1">Ngân hàng thụ hưởng *</label>
-                    <select
-                      value={storeSettings.bank_id || "MB"}
-                      onChange={(e) => {
-                        const bId = e.target.value;
-                        const banksMap = {
-                          MB: "MBBank (Ngân hàng Quân Đội)",
-                          VCB: "Vietcombank (Ngoại thương VN)",
-                          TCB: "Techcombank (Kỹ Thương VN)",
-                          VPB: "VPBank (Việt Nam Thịnh Vượng)",
-                          ACB: "ACB (Á Châu)",
-                          BIDV: "BIDV (Đầu tư & Phát triển VN)",
-                          VBA: "Agribank (Nông nghiệp VN)",
-                          TPB: "TPBank (Tiên Phong)",
-                          STB: "Sacombank (Sài Gòn Thương Tín)",
-                          VIB: "VIB (Quốc Tế VN)",
-                        };
-                        setStoreSettings({
-                          ...storeSettings,
-                          bank_id: bId,
-                          bank_name: banksMap[bId] || bId,
-                        });
-                      }}
-                      className="w-full px-3.5 py-2 border border-[#CBD5E1] rounded-xl focus:border-[#0275A9] focus:outline-none font-semibold bg-white cursor-pointer"
-                    >
-                      <option value="MB">MBBank (Ngân hàng Quân Đội)</option>
-                      <option value="VCB">Vietcombank (Ngoại thương VN)</option>
-                      <option value="TCB">Techcombank (Kỹ Thương VN)</option>
-                      <option value="VPB">VPBank (Việt Nam Thịnh Vượng)</option>
-                      <option value="ACB">ACB (Á Châu)</option>
-                      <option value="BIDV">BIDV (Đầu tư & Phát triển VN)</option>
-                      <option value="VBA">Agribank (Nông nghiệp VN)</option>
-                      <option value="TPB">TPBank (Tiên Phong)</option>
-                      <option value="STB">Sacombank (Sài Gòn Thương Tín)</option>
-                      <option value="VIB">VIB (Quốc Tế VN)</option>
-                    </select>
-                  </div>
-
-                  <div>
-                    <label className="font-bold text-[#141923] block mb-1">Số tài khoản thụ hưởng *</label>
-                    <input
-                      type="text"
-                      placeholder="Ví dụ: 0901234567"
-                      value={storeSettings.bank_account_no || ""}
-                      onChange={(e) => setStoreSettings({ ...storeSettings, bank_account_no: e.target.value.trim() })}
-                      className="w-full px-3.5 py-2 border border-[#CBD5E1] rounded-xl focus:border-[#0275A9] focus:outline-none font-mono font-bold text-[#0275A9]"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="font-bold text-[#141923] block mb-1">Tên chủ tài khoản (Không dấu) *</label>
-                    <input
-                      type="text"
-                      placeholder="Ví dụ: NET STORE VN"
-                      value={storeSettings.bank_account_name || ""}
-                      onChange={(e) => setStoreSettings({ ...storeSettings, bank_account_name: e.target.value.toUpperCase() })}
-                      className="w-full px-3.5 py-2 border border-[#CBD5E1] rounded-xl focus:border-[#0275A9] focus:outline-none uppercase font-bold text-[#141923]"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="font-bold text-[#141923] block mb-1">Tên hiển thị ngân hàng</label>
-                    <input
-                      type="text"
-                      value={storeSettings.bank_name || "MBBank (Ngân hàng Quân Đội)"}
-                      onChange={(e) => setStoreSettings({ ...storeSettings, bank_name: e.target.value })}
-                      className="w-full px-3.5 py-2 border border-[#CBD5E1] rounded-xl focus:border-[#0275A9] focus:outline-none text-[#707783]"
-                    />
-                  </div>
-                </div>
-
-                {/* Live Preview Box */}
-                <div className="p-4 bg-[#F8FAFC] border border-[#E5E8EC] rounded-xl flex flex-col sm:flex-row items-center gap-4 text-xs">
-                  <img
-                    src={`https://img.vietqr.io/image/${storeSettings.bank_id || "MB"}-${storeSettings.bank_account_no || "0901234567"}-compact2.png?amount=100000&addInfo=DEMO&accountName=${encodeURIComponent(storeSettings.bank_account_name || "NET STORE VN")}`}
-                    alt="VietQR Demo"
-                    className="w-20 h-20 object-contain rounded-lg border border-[#E5E8EC] bg-white p-1 shrink-0"
-                  />
-                  <div>
-                    <div className="font-bold text-[#141923] text-sm">Xem trước mã VietQR của Cửa hàng</div>
-                    <div className="text-[#707783] mt-0.5">
-                      Ngân hàng: <strong>{storeSettings.bank_name || "MBBank"}</strong> · STK: <strong className="font-mono text-[#0275A9]">{storeSettings.bank_account_no || "0901234567"}</strong>
-                    </div>
-                    <div className="text-[#707783]">
-                      Chủ tài khoản: <strong className="uppercase">{storeSettings.bank_account_name || "NET STORE VN"}</strong>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
               {/* Thông tin chung */}
               <div className="bg-white rounded-2xl border border-[#E5E8EC] p-6 shadow-2xs space-y-4">
                 <h4 className="font-extrabold text-sm text-[#141923]">1. Hotline & Thông điệp Topbar</h4>
@@ -4034,14 +4048,11 @@ Hãy đảm bảo file "start_backend.bat" đang chạy.`);
             <div className="p-6 overflow-y-auto space-y-6 text-xs flex-1">
               {/* Customer info */}
               <div className="p-4 bg-[#F8FAFC] rounded-xl border border-[#E5E8EC] space-y-2">
-                <div className="font-bold text-[#141923]">Thông tin giao hàng & Thanh toán:</div>
+                <div className="font-bold text-[#141923]">Thông tin giao hàng:</div>
                 <div className="grid grid-cols-2 gap-2 text-[#707783]">
                   <div>Người nhận: <span className="font-bold text-[#141923]">{selectedOrder.customerName}</span></div>
                   <div>SĐT: <span className="font-bold text-[#141923]">{selectedOrder.phone}</span></div>
                   <div className="col-span-2">Địa chỉ: <span className="font-bold text-[#141923]">{selectedOrder.address}</span></div>
-                  <div className="col-span-2">
-                    Hình thức thanh toán: <span className="font-bold text-[#0275A9]">{selectedOrder.paymentMethodLabel || selectedOrder.phuongThucThanhToan || (selectedOrder.paymentMethod === 'vietqr' ? 'Chuyển khoản VietQR' : 'Thanh toán khi nhận hàng (COD)')}</span>
-                  </div>
                   {selectedOrder.note && (
                     <div className="col-span-2">Ghi chú: <span className="italic text-[#141923]">{selectedOrder.note}</span></div>
                   )}
@@ -4098,7 +4109,7 @@ Hãy đảm bảo file "start_backend.bat" đang chạy.`);
                 </div>
                 {selectedOrder.discount > 0 && (
                   <div className="flex justify-between text-rose-600 font-semibold">
-                    <span>Giảm giá voucher {selectedOrder.voucherCode || selectedOrder.maVoucher ? `(${selectedOrder.voucherCode || selectedOrder.maVoucher})` : ""}:</span>
+                    <span>Giảm giá voucher:</span>
                     <span>-{formatVND(selectedOrder.discount)}</span>
                   </div>
                 )}

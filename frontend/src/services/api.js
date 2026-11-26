@@ -3,10 +3,17 @@
  * Switch between Local Mock / localStorage and Backend REST API (Node.js, FastAPI, Spring)
  */
 
+const DYNAMIC_API_BASE =
+  typeof window !== 'undefined' &&
+  window.location.protocol.startsWith('http') &&
+  window.location.port !== '5173'
+    ? `${window.location.origin}/api`
+    : `http://${(typeof window !== 'undefined' && window.location.hostname) || 'localhost'}:5000/api`;
+
 export const API_CONFIG = {
-  // Bật kết nối Backend thật 100%
+  // Bật kết nối Backend thật 100% (tự động nhận LAN / Online / localhost)
   USE_BACKEND_API: true,
-  BASE_URL: 'http://localhost:5000/api',
+  BASE_URL: DYNAMIC_API_BASE,
   TIMEOUT_MS: 10000,
   HEADERS: {}
 };

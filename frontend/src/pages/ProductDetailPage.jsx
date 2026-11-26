@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import Icon from '../components/Icon.jsx';
 import { ReviewFormModal } from '../components/ReviewFormModal.jsx';
 import { formatVND } from '../utils/formatters.js';
+import { API_CONFIG } from '../services/api.js';
 
 // =========================================================================
 // MODAL: TÍNH TOÁN TRẢ GÓP 0% LÃI SUẤT THỰC TẾ
@@ -216,7 +217,8 @@ export function ProductDetailPage({ products = [], productId, onAddToCart, onTog
   const [isReviewModalOpen, setIsReviewModalOpen] = useState(false);
   const [isInstallmentModalOpen, setIsInstallmentModalOpen] = useState(false);
 
-  // Real Comments & Q&A from SQLite
+  // Real Reviews & Comments from SQLite
+  const [sqlReviews, setSqlReviews] = useState(null);
   const [comments, setComments] = useState([]);
   const [commentAuthor, setCommentAuthor] = useState("");
   const [commentPhone, setCommentPhone] = useState("");
@@ -238,19 +240,34 @@ export function ProductDetailPage({ products = [], productId, onAddToCart, onTog
       setActiveImg(product.gallery?.[0] || product.img);
     }
     setQuantity(1);
+    setSqlReviews(null);
 
-    if (product?.id) {
-      fetch(`http://localhost:5000/api/comments?productId=${product.id}&status=approved`)
-        .then((res) => res.json())
-        .then((data) => { if (Array.isArray(data)) setComments(data); })
-        .catch((err) => console.warn("[PDP] Comments fetch error:", err));
-    }
     if (!settingsData) {
-      fetch('http://localhost:5000/api/settings')
+      fetch(`${API_CONFIG.BASE_URL}/settings`)
         .then((res) => res.json())
         .then((data) => { if (data) setSettingsData(data); })
         .catch((err) => console.warn("[PDP] Settings fetch error:", err));
     }
+
+    if (!product?.id) return;
+    const syncProductFeedback = () => {
+      fetch(`${API_CONFIG.BASE_URL}/products/${encodeURIComponent(product.id)}/reviews`)
+        .then((res) => (res.ok ? res.json() : null))
+        .then((data) => { if (Array.isArray(data)) setSqlReviews(data); })
+        .catch((err) => console.warn("[PDP] Reviews fetch error:", err));
+
+      fetch(`${API_CONFIG.BASE_URL}/comments?productId=${encodeURIComponent(product.id)}&status=approved`)
+        .then((res) => (res.ok ? res.json() : null))
+        .then((data) => { if (Array.isArray(data)) setComments(data); })
+        .catch((err) => console.warn("[PDP] Comments fetch error:", err));
+    };
+    syncProductFeedback();
+    const timer = setInterval(syncProductFeedback, 3000);
+    window.addEventListener("focus", syncProductFeedback);
+    return () => {
+      clearInterval(timer);
+      window.removeEventListener("focus", syncProductFeedback);
+    };
   }, [product?.id]);
 
   const handleSubmitComment = async (e) => {
@@ -261,7 +278,7 @@ export function ProductDetailPage({ products = [], productId, onAddToCart, onTog
     }
     setIsSubmittingComment(true);
     try {
-      const res = await fetch("http://localhost:5000/api/comments", {
+      const res = await fetch(`${API_CONFIG.BASE_URL}/comments`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -339,8 +356,11 @@ export function ProductDetailPage({ products = [], productId, onAddToCart, onTog
 
   // Review & Rating calculations (100% Real from SQLite Data, no fake numbers)
   const allReviews = useMemo(() => {
-    return [...(customReviews || []), ...(product.reviews || [])];
-  }, [customReviews, product.reviews]);
+    const baseReviews = sqlReviews !== null ? sqlReviews : (product.reviews || []);
+    const seen = new Set(baseReviews.map((r) => r.id));
+    const extras = (customReviews || []).filter((r) => !seen.has(r.id));
+    return [...extras, ...baseReviews];
+  }, [customReviews, product.reviews, sqlReviews]);
 
   const reviewCount = allReviews.length;
   const avgRating = useMemo(() => {
@@ -423,6 +443,7 @@ export function ProductDetailPage({ products = [], productId, onAddToCart, onTog
         onClose={() => setIsReviewModalOpen(false)}
         product={product}
         onSubmitReview={(prodId, rev) => {
+          setSqlReviews((prev) => [rev, ...(prev || [])]);
           if (onAddReview) onAddReview(prodId, rev);
         }}
       />
@@ -769,6 +790,15 @@ export function ProductDetailPage({ products = [], productId, onAddToCart, onTog
                   ))}
                 </div>
                 <p className="text-xs text-[#334155] leading-relaxed">{rev.content}</p>
+                {rev.reply && (
+                  <div className="p-3 bg-[#EAF4FA] border border-[#0275A9]/20 rounded-xl space-y-1 text-xs">
+                    <div className="flex items-center gap-1.5 font-bold text-[#0275A9] text-[11px]">
+                      <Icon name="shield-check" className="w-3.5 h-3.5 text-[#0275A9]" />
+                      <span>nét. Quản trị viên phản hồi:</span>
+                    </div>
+                    <p className="text-[#141923] leading-relaxed text-xs">{rev.reply}</p>
+                  </div>
+                )}
               </div>
             ))}
           </div>

@@ -3,6 +3,7 @@ import React, { useState, useEffect, useMemo, useRef } from 'react';
 // Data & Utils & Services
 import { parseRoute } from './utils/router.js';
 import { getStorage, setStorage } from './utils/storage.js';
+import { API_CONFIG } from './services/api.js';
 import { productService } from './services/productService.js';
 import { reviewService } from './services/reviewService.js';
 import { orderService } from './services/orderService.js';
@@ -78,22 +79,22 @@ export function App() {
       })
       .catch((err) => console.error('[App] Lỗi tải đơn hàng từ backend:', err));
 
-    fetch('http://localhost:5000/api/banners')
+    fetch(`${API_CONFIG.BASE_URL}/banners`)
       .then((res) => res.json())
       .then((data) => { if (Array.isArray(data)) setBanners(data); })
       .catch((err) => console.error('[App] Lỗi tải banners:', err));
 
-    fetch('http://localhost:5000/api/articles')
+    fetch(`${API_CONFIG.BASE_URL}/articles`)
       .then((res) => res.json())
       .then((data) => { if (Array.isArray(data)) setArticles(data); })
       .catch((err) => console.error('[App] Lỗi tải articles:', err));
 
-    fetch('http://localhost:5000/api/faqs')
+    fetch(`${API_CONFIG.BASE_URL}/faqs`)
       .then((res) => res.json())
       .then((data) => { if (Array.isArray(data)) setFaqs(data); })
       .catch((err) => console.error('[App] Lỗi tải faqs:', err));
 
-    fetch('http://localhost:5000/api/settings')
+    fetch(`${API_CONFIG.BASE_URL}/settings`)
       .then((res) => res.json())
       .then((data) => { if (data) setStoreSettings(data); })
       .catch((err) => console.error('[App] Lỗi tải settings:', err));
@@ -104,7 +105,14 @@ export function App() {
     const refreshData = () => {
       productService.getAll()
         .then((data) => {
-          if (data && data.length > 0) setProducts(data);
+          if (data && data.length > 0) {
+            setProducts(data);
+            // Xóa cache review cục bộ cũ để đồng bộ tuyệt đối với SQLite (tránh sót đánh giá đã xóa)
+            setProductReviews((prev) => (Object.keys(prev).length > 0 ? {} : prev));
+            if (Object.keys(getStorage("net_custom_reviews", {})).length > 0) {
+              setStorage("net_custom_reviews", {});
+            }
+          }
         })
         .catch((err) => console.warn('[App] Auto-refresh products error:', err));
 
@@ -166,16 +174,16 @@ export function App() {
       if (updated) {
         setProducts((prev) => prev.map((p) => (p.id === productId ? updated : p)));
       }
+      showToast("Cảm ơn bạn! Đánh giá đã được xuất bản trên nét.", "success");
     } catch (err) {
       console.warn('[App] Lưu review lên SQLite thất bại, chuyển lưu cục bộ:', err);
+      setProductReviews((prev) => {
+        const updated = { ...prev, [productId]: [newReview, ...(prev[productId] || [])] };
+        setStorage("net_custom_reviews", updated);
+        return updated;
+      });
+      showToast("Cảm ơn bạn! Đánh giá đã được lưu tạm cục bộ.", "info");
     }
-    setProductReviews((prev) => {
-      const updated = { ...prev, [productId]: [newReview, ...(prev[productId] || [])] };
-      setStorage("net_custom_reviews", updated);
-      return updated;
-    });
-    showToast("Cảm ơn bạn đã gửi đánh giá!", "success");
-    showToast("Cảm ơn bạn! Đánh giá đã được xuất bản trên nét.", "success");
   };
 
   useEffect(() => setStorage("net_cart", cart), [cart]);
@@ -375,7 +383,12 @@ export function App() {
           />
         )}
 
-        {currentRoute.page === "pdp" && (
+        {currentRoute.page === "pdp" && (() => {
+          const pdpProduct = products.find(
+            (p) => p.id === currentRoute.productId || p.slug === currentRoute.productId
+          );
+          const pdpKey = pdpProduct?.id || currentRoute.productId;
+          return (
           <ProductDetailPage
             products={products}
             productId={currentRoute.productId}
@@ -384,11 +397,12 @@ export function App() {
             wishlist={wishlist}
             onNavigate={navigate}
             onShowToast={showToast}
-            customReviews={productReviews[currentRoute.productId] || []}
+            customReviews={productReviews[pdpKey] || []}
             onAddReview={handleAddReview}
             storeSettings={storeSettings}
           />
-        )}
+          );
+        })()}
 
         {currentRoute.page === "category" && (
           <CategoryPage
