@@ -25,14 +25,15 @@ Khi tải hoặc sao chép dự án về máy tính của từng thành viên, *
 
 ### Bước 1: Cài đặt Node.js (Bắt buộc cho Backend)
 1. Truy cập trang chủ chính thức: [https://nodejs.org/](https://nodejs.org/)
-2. Tải phiên bản **LTS (Khuyến nghị bản 18, 20 hoặc 22)** dành cho hệ điều hành của bạn.
+2. Tải phiên bản **Node.js 24 LTS (hoặc bản từ `22.13` trở lên)** dành cho hệ điều hành của bạn.
+   * ⚠️ *Lưu ý quan trọng*: Backend sử dụng `node:sqlite` tích hợp sẵn của Node.js. **Không dùng Node 18 hoặc 20** vì sẽ báo lỗi thiếu module `node:sqlite`. (Thư mục `tools/node-v26.12.1-win-x64` được loại trừ khỏi GitHub nên máy thành viên mới cần tự cài Node.js).
 3. Chạy file cài đặt vừa tải về, bấm **Next** liên tục (giữ nguyên cài đặt mặc định, đảm bảo mục *"Add to PATH"* được chọn).
 4. Kiểm tra cài đặt thành công: Mở **Command Prompt (cmd)** hoặc **PowerShell** và gõ:
    ```bash
    node -v
    npm -v
    ```
-   *(Nếu hiển thị số phiên bản như `v20.x.x` và `10.x.x` là đã thành công).*
+   *(Nếu hiển thị số phiên bản như `v24.x.x` hoặc `v22.13+` và `10.x.x` là đã thành công).*
 
 ### Bước 2: Cài đặt Git & Trình soạn thảo VS Code
 * **Git**: Tải tại [https://git-scm.com/](https://git-scm.com/) và cài đặt mặc định để clone/push mã nguồn.
@@ -46,12 +47,11 @@ Khi tải hoặc sao chép dự án về máy tính của từng thành viên, *
 ## 📥 3. Hướng Dẫn Tải (Clone) Và Cài Đặt Dự Án
 
 ### Bước 1: Mở Terminal tại thư mục bạn muốn lưu dự án
-Mở PowerShell hoặc Command Prompt tại thư mục làm việc (ví dụ `D:\projects`), sau đó chạy:
+Mở PowerShell hoặc Command Prompt tại thư mục làm việc (ví dụ `D:\projects`, không dấu tiếng Việt, không khoảng trắng), sau đó chạy:
 ```bash
-git clone https://github.com/nthaubot-gif/net-tech-store.git
-cd net-tech-store
+git clone https://github.com/hau-nguyen-dev/do-an-linh-kien-dien-tu.git
+cd do-an-linh-kien-dien-tu
 ```
-*(Thay link trên bằng link Repository chính thức của nhóm).*
 
 ### Bước 2: Cài đặt thư viện dependencies cho Backend
 Tại thư mục gốc của dự án, di chuyển vào thư mục `backend` và cài đặt các gói cần thiết:
@@ -60,7 +60,7 @@ cd backend
 npm install
 cd ..
 ```
-*(Lệnh này sẽ tự động tải các gói `express`, `better-sqlite3`, `cors`, `body-parser` vào thư mục `backend/node_modules/`).*
+*(Lệnh này sẽ tự động tải `express` và `cors` vào thư mục `backend/node_modules/`. Cơ sở dữ liệu SQLite dùng sẵn `node:sqlite` tích hợp trong Node.js nên không cần cài thêm `better-sqlite3`).*
 
 ---
 
@@ -75,20 +75,21 @@ Dự án đã được tích hợp sẵn 3 tệp batch thông minh:
    * *Thông báo thành công*: `[Database SQLite] Da ket noi thanh cong: database.sqlite` và `Backend Server dang chay tai: http://localhost:5000`.
    * ⚠️ *Lưu ý*: Giữ nguyên cửa sổ đen này không tắt để Backend liên tục hoạt động.
 2. **Khởi động Storefront (Trang mua sắm khách hàng)**:
-   * Nhấp đúp vào file [`start_frontend.bat`](start_frontend.bat).
+   * Nhấp đúp vào file [`start_frontend.bat`](start_frontend.bat) (hoặc truy cập `http://localhost:5000/index.html`).
    * Trình duyệt mặc định sẽ tự động mở trang web bán hàng (`frontend/index.html`).
 3. **Khởi động Admin (Trang quản trị cửa hàng nét. Store Manager)**:
-   * Nhấp đúp vào file [`start_admin.bat`](start_admin.bat).
+   * Nhấp đúp vào file [`start_admin.bat`](start_admin.bat) (hoặc truy cập `http://localhost:5000/admin.html`).
    * Trình duyệt sẽ mở trang quản trị (`frontend/admin.html`), kết nối trực tiếp với database SQLite port 5000.
 
 ### Cách 2: Khởi chạy bằng dòng lệnh Terminal (Dành cho lập trình viên)
 ```bash
 # Terminal 1: Chạy Backend
 cd backend
-node server.js
+npm start
 
-# Terminal 2: Mở Frontend Client hoặc Admin
-# Mở trực tiếp file frontend/index.html hoặc frontend/admin.html trên bất kỳ trình duyệt nào (Chrome, Edge, Firefox, Cốc Cốc)
+# Sau khi Backend chạy tại cổng 5000, mở trình duyệt vào:
+# - Storefront: http://localhost:5000/index.html (hoặc mở trực tiếp frontend/index.html)
+# - Admin:      http://localhost:5000/admin.html (hoặc mở trực tiếp frontend/admin.html)
 ```
 
 ---
