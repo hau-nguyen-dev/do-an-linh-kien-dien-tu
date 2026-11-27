@@ -2,8 +2,48 @@ import crypto from 'node:crypto';
 import { Router } from 'express';
 import { db, formatOrder, safeJsonParse } from '../config/db.js';
 import { getAdminSession, getCustomerSession } from '../middleware/adminAuth.js';
+import {
+  cancelPaymentLink, createPaymentLink, getPublicBaseUrl, isPayosConfigured, payosOrderCodeOf,
+} from '../services/payos.js';
 
 const router = Router();
+
+const PAYOS_DESCRIPTION_PREFIX = 'N'; // nội dung chuyển khoản tối đa 9 ký tự: "N" + 8 chữ số của mã đơn
+const MAX_BUYER_NAME_LENGTH = 100;
+const CANCEL_REASON = 'Đơn hàng đã bị hủy';
+
+// Tạo link thanh toán payOS cho đơn VietQR. Lỗi payOS không làm mất đơn: đơn quay về luồng QR thủ công.
+async function attachPayosPayment(req, orderId, { total, customerName, phone }) {
+  if (!isPayosConfigured()) return;
+  const base = getPublicBaseUrl(req);
+  if (!base) {
+    console.error('[payOS] Thiếu PUBLIC_BASE_URL nên không tạo link thanh toán; đơn dùng QR thủ công.');
+    return;
+  }
+  const orderCode = payosOrderCodeOf(orderId);
+  try {
+    const link = await createPaymentLink({
+      orderCode,
+      amount: total,
+      description: `${PAYOS_DESCRIPTION_PREFIX}${orderCode}`,
+      returnUrl: `${base}/index.html`,
+      cancelUrl: `${base}/index.html`,
+      buyerName: String(customerName || '').slice(0, MAX_BUYER_NAME_LENGTH),
+      buyerPhone: phone,
+    });
+    db.prepare('UPDATE don_hang SET payos_thong_tin = ? WHERE ma_don_hang = ?').run(JSON.stringify(link), orderId);
+  } catch (err) {
+    console.error(`[payOS] Không tạo được link thanh toán cho đơn ${orderId}:`, err.message);
+  }
+}
+
+// Hủy link payOS của đơn chưa thanh toán để khách không chuyển tiền vào đơn đã hủy/xóa (lỗi chỉ ghi log)
+function cancelPayosLinkOf(row) {
+  if (!row?.payos_thong_tin || row.da_thanh_toan || !isPayosConfigured()) return;
+  cancelPaymentLink(payosOrderCodeOf(row.ma_don_hang), CANCEL_REASON).catch((err) => {
+    console.error(`[payOS] Không hủy được link thanh toán của đơn ${row.ma_don_hang}:`, err.message);
+  });
+}
 
 const ORDER_ID_PREFIX = 'NET';
 const ORDER_ID_DIGITS = 8;
@@ -104,7 +144,7 @@ router.get('/:id', (req, res) => {
 });
 
 // POST /api/orders
-router.post('/', (req, res) => {
+router.post('/', async (req, res) => {
   const ord = req.body;
 
   // 1. CHẶN KHÁCH VÃNG LAI & ĐƠN RÁC: phải đăng nhập, và đơn luôn gắn với số điện thoại của phiên đăng nhập
@@ -191,6 +231,14 @@ router.post('/', (req, res) => {
     user.id
   );
 
+  if (status === AWAITING_QR_STATUS) {
+    await attachPayosPayment(req, id, {
+      total: clientTotal,
+      customerName,
+      phone: targetPhone,
+    });
+  }
+
   const created = db.prepare('SELECT * FROM don_hang WHERE ma_don_hang = ?').get(id);
   res.status(201).json(formatOrder(created));
 });
@@ -206,13 +254,16 @@ router.put('/:id/status', (req, res) => {
   if (!updated) {
     return res.status(404).json({ message: 'Không tìm thấy đơn hàng để cập nhật' });
   }
-  res.json(formatOrder(updated));
+  const formatted = formatOrder(updated);
+  if (formatted.statusCode === 'cancelled') cancelPayosLinkOf(updated);
+  res.json(formatted);
 });
 
 // DELETE /api/orders/:id
 router.delete('/:id', (req, res) => {
   const rawId = req.params.id;
   const cleanId = rawId.replace(/^#+/, '');
+  cancelPayosLinkOf(db.prepare('SELECT * FROM don_hang WHERE ma_don_hang = ? OR ma_don_hang = ?').get(cleanId, '#' + cleanId));
   db.prepare('DELETE FROM don_hang WHERE ma_don_hang = ? OR ma_don_hang = ?').run(cleanId, '#' + cleanId);
   res.json({ success: true, id: cleanId });
 });

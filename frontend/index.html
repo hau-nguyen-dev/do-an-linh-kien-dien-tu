@@ -1696,6 +1696,51 @@ function PaymentQrBox({ order }) {
     );
   }
 
+  // Đơn có link payOS: payOS cấp tài khoản + nội dung riêng cho đơn và tự báo về server khi nhận tiền
+  const payos = order.payos;
+  if (payos) {
+    const payosQrSrc = generateVietQRUrl({
+      bankId: payos.bin,
+      accountNo: payos.accountNumber,
+      accountName: payos.accountName,
+      amount: order.total,
+      memo: payos.description,
+    });
+    return (
+      <div className="qr-box p-6 rounded-2xl border space-y-4">
+        <div className="text-center">
+          <h3 className="text-sm font-bold text-[#141923]">Quét mã QR để chuyển khoản</h3>
+          <p className="text-xs text-[#707783] mt-0.5">
+            Mở app ngân hàng bất kỳ và chọn Quét QR, số tiền và nội dung đã được điền sẵn. Đơn hàng sẽ tự động xác nhận trong vài giây sau khi chuyển khoản.
+          </p>
+        </div>
+        <div className="flex flex-col sm:flex-row items-center justify-center gap-6 pt-2">
+          <div className="p-3 bg-white rounded-xl shadow-md border border-[#E5E8EC]">
+            <img src={payosQrSrc} alt="Mã QR thanh toán" className="w-48 h-auto object-contain rounded-lg" />
+          </div>
+          <div className="space-y-2 text-xs">
+            <div className="p-2.5 bg-white rounded-lg border border-[#E5E8EC]">
+              <div className="text-[#707783] text-[10px]">Số tài khoản</div>
+              <div className="font-mono font-bold text-[#0275A9] text-sm">{payos.accountNumber}</div>
+            </div>
+            <div className="p-2.5 bg-white rounded-lg border border-[#E5E8EC]">
+              <div className="text-[#707783] text-[10px]">Chủ tài khoản</div>
+              <div className="font-bold text-[#141923]">{payos.accountName}</div>
+            </div>
+            <div className="p-2.5 bg-white rounded-lg border border-[#E5E8EC]">
+              <div className="text-[#707783] text-[10px]">Số tiền thanh toán</div>
+              <div className="font-bold text-rose-600 text-sm">{formatVND(order.total)}</div>
+            </div>
+            <div className="p-2.5 bg-white rounded-lg border border-[#E5E8EC]">
+              <div className="text-[#707783] text-[10px]">Nội dung chuyển khoản (giữ nguyên)</div>
+              <div className="font-mono font-bold text-[#141923]">{payos.description}</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   if (!config) {
     return <div className="p-5 text-xs text-[#707783] text-center">Đang tải thông tin thanh toán...</div>;
   }

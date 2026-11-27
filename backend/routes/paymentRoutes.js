@@ -1,8 +1,16 @@
 import crypto from 'node:crypto';
 import { Router } from 'express';
-import { db } from '../config/db.js';
+import { db, safeJsonParse } from '../config/db.js';
+import { createFailureLimiter } from '../middleware/failureLimiter.js';
+import {
+  confirmWebhookUrl, getPublicBaseUrl, isPayosConfigured, isSuccessfulPayment, orderIdFromPayosCode, verifyWebhook,
+} from '../services/payos.js';
 
 const router = Router();
+
+// Webhook công khai: giới hạn số yêu cầu mỗi IP để kẻ lạ không thể dồn tính toán HMAC
+const WEBHOOK_MAX_REQUESTS_PER_MINUTE = 120;
+const webhookLimiter = createFailureLimiter({ maxFailures: WEBHOOK_MAX_REQUESTS_PER_MINUTE, windowMs: 60_000 });
 
 const AWAITING_PAYMENT_STATUSES = new Set([
   'Chờ thanh toán VietQR', 'Chờ thanh toán QR', 'pending_qr', 'Chờ xác nhận', 'pending',
@@ -43,6 +51,7 @@ function readConfig() {
     // Đổi khi admin tải ảnh mới, để trình duyệt không dùng ảnh cũ trong cache
     qrImageVersion: qrImage ? crypto.createHash('sha1').update(qrImage).digest('hex').slice(0, 10) : '',
     configured: hasBankInfo || Boolean(qrImage),
+    payosEnabled: isPayosConfigured(),
   };
 }
 
@@ -139,6 +148,81 @@ router.post('/orders/:id/confirm', (req, res) => {
     WHERE ma_don_hang = ?
   `).run(new Date().toISOString(), `ADMIN-${req.admin?.sub || 'admin'}`, nextStatus, order.ma_don_hang);
   res.json({ success: true, message: 'Đã xác nhận thanh toán.' });
+});
+
+// ---------------------------------------------------------------- payOS: thanh toán QR tự động
+
+function findOrderByPayosCode(orderCode) {
+  const orderId = orderIdFromPayosCode(orderCode);
+  return orderId ? findOrder(orderId) : undefined;
+}
+
+// Ghi lại giao dịch bất thường (sai số tiền, trả lại, đơn đã hủy...) để admin đối soát, không chỉ nằm trong log
+function flagForReview(order, note, data) {
+  const text = `${note} (tham chiếu ${data.reference || data.paymentLinkId || data.orderCode})`;
+  console.warn(`[payOS] Cần kiểm tra đơn ${order.ma_don_hang}: ${text}`);
+  db.prepare('UPDATE don_hang SET payos_canh_bao = ? WHERE ma_don_hang = ?').run(text, order.ma_don_hang);
+}
+
+// POST /api/payment/payos-webhook - payOS gọi khi có tiền vào. Công khai nhưng bắt buộc đúng chữ ký.
+// Luôn trả 200 cho webhook hợp lệ (kể cả đơn không tồn tại) để payOS không gửi lại và để xác nhận URL được.
+router.post('/payos-webhook', (req, res) => {
+  if (webhookLimiter.isLocked(req.ip)) return res.status(429).json({ success: false, message: 'Quá nhiều yêu cầu.' });
+  webhookLimiter.record(req.ip);
+  if (!isPayosConfigured()) return res.status(503).json({ success: false, message: 'payOS chưa được cấu hình.' });
+  if (!verifyWebhook(req.body)) return res.status(401).json({ success: false, message: 'Chữ ký không hợp lệ.' });
+  if (!isSuccessfulPayment(req.body)) return res.json({ success: true });
+
+  const { data } = req.body;
+  const order = findOrderByPayosCode(data.orderCode);
+  if (!order) {
+    console.warn(`[payOS] Nhận thanh toán cho orderCode ${data.orderCode} không có đơn tương ứng, tham chiếu ${data.reference}`);
+    return res.json({ success: true });
+  }
+
+  const transactionId = `PAYOS-${data.reference || data.paymentLinkId || data.orderCode}`;
+  if (order.da_thanh_toan) {
+    // Gửi lại cùng giao dịch thì bỏ qua; giao dịch khác vào đơn đã thanh toán nghĩa là khách trả thừa
+    if (order.ma_giao_dich_ngan_hang !== transactionId) flagForReview(order, `Nhận thêm ${data.amount}đ cho đơn đã thanh toán`, data);
+    return res.json({ success: true });
+  }
+
+  const linkId = safeJsonParse(order.payos_thong_tin, null)?.paymentLinkId;
+  if (linkId && data.paymentLinkId !== linkId) {
+    flagForReview(order, `Giao dịch ${data.amount}đ thuộc link thanh toán khác với link của đơn`, data);
+    return res.json({ success: true });
+  }
+
+  if (order.trang_thai === 'Đã hủy' || Number(data.amount) !== Number(order.tong_tien)) {
+    // Cần người xử lý: khách chuyển cho đơn đã hủy hoặc sai số tiền. Không tự đánh dấu đã thanh toán.
+    flagForReview(order, `Nhận ${data.amount}đ, đơn cần ${order.tong_tien}đ, trạng thái "${order.trang_thai}"`, data);
+    return res.json({ success: true });
+  }
+
+  const nextStatus = AWAITING_PAYMENT_STATUSES.has(order.trang_thai) ? PAID_STATUS : order.trang_thai;
+  db.prepare(`
+    UPDATE don_hang
+    SET da_thanh_toan = 1, thoi_gian_thanh_toan = ?, ma_giao_dich_ngan_hang = ?, trang_thai = ?, payos_canh_bao = NULL
+    WHERE ma_don_hang = ? AND da_thanh_toan = 0
+  `).run(new Date().toISOString(), transactionId, nextStatus, order.ma_don_hang);
+  res.json({ success: true });
+});
+
+// POST /api/payment/payos/confirm-webhook - admin đăng ký URL webhook với payOS (chạy một lần sau khi deploy)
+router.post('/payos/confirm-webhook', async (req, res) => {
+  if (!isPayosConfigured()) return res.status(503).json({ success: false, message: 'payOS chưa được cấu hình.' });
+  const base = getPublicBaseUrl(req);
+  if (!base) {
+    return res.status(503).json({ success: false, message: 'Chưa đặt PUBLIC_BASE_URL (địa chỉ https của cửa hàng) trên máy chủ.' });
+  }
+  // Luôn dùng địa chỉ cửa hàng đã cấu hình, không nhận URL tùy ý để không thể chuyển hướng webhook sang nơi khác
+  const webhookUrl = `${base}/api/payment/payos-webhook`;
+  try {
+    const result = await confirmWebhookUrl(webhookUrl);
+    res.json({ success: true, webhookUrl, result });
+  } catch (err) {
+    res.status(502).json({ success: false, message: err.message });
+  }
 });
 
 export default router;

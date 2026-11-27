@@ -140,6 +140,7 @@ const PUBLIC_WRITES = [
   ['POST', /^\/api\/products\/[^/]+\/reviews$/],
   ['POST', /^\/api\/vouchers\/validate$/],
   ['POST', /^\/api\/admin\/login$/],
+  ['POST', /^\/api\/payment\/payos-webhook$/], // payOS gọi vào, được bảo vệ bằng chữ ký HMAC
 ];
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 
