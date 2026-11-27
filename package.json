@@ -7,7 +7,9 @@
     "node": ">=22.5.0"
   },
   "scripts": {
-    "test": "node tools/test_payment_webhook.mjs",
+    "test": "node --test tools/test_payment_webhook.mjs tools/test_catalog.mjs",
+    "catalog:images": "node tools/catalog/render_images.mjs",
+    "catalog:import": "node backend/catalog/import.js",
     "dev": "vite frontend",
     "server": "node backend/server.js",
     "backend": "node backend/server.js",
