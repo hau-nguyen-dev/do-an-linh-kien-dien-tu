@@ -8,9 +8,17 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
+import { createServer } from 'node:http';
+import { createHmac } from 'node:crypto';
+import { signPaymentRequest, signWebhookData } from '../backend/services/payos.js';
 
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = 5055;
+const PAYOS_PORT = 5056;
+const PAYOS_KEYS = { PAYOS_CLIENT_ID: 'test-client', PAYOS_API_KEY: 'test-key', PAYOS_CHECKSUM_KEY: 'test-checksum' };
+let fakePayos;
+let payosFailing = false;
+const payosRequests = [];
 const BASE = `http://127.0.0.1:${PORT}/api`;
 const ADMIN = { username: 'testadmin', password: 'Matkhau-Test-123' };
 
@@ -70,10 +78,38 @@ async function createVietQrOrder(quantity = 1, overrides = {}) {
 
 before(async () => {
   tmpDir = mkdtempSync(path.join(tmpdir(), 'net-test-'));
-  copyFileSync(path.join(root, 'backend', 'database.sqlite'), path.join(tmpDir, 'test.sqlite'));
+  // Bản mẫu sạch seed.sqlite (cũng là nguồn server dùng để tự khởi tạo CSDL lần đầu)
+  copyFileSync(path.join(root, 'backend', 'seed.sqlite'), path.join(tmpDir, 'test.sqlite'));
+  // payOS giả: ghi lại yêu cầu tạo link và trả về thông tin tài khoản như payOS thật
+  fakePayos = createServer((req, res) => {
+    let raw = '';
+    req.on('data', (chunk) => { raw += chunk; });
+    req.on('end', () => {
+      const body = raw ? JSON.parse(raw) : {};
+      payosRequests.push({ url: req.url, headers: req.headers, body });
+      res.setHeader('Content-Type', 'application/json');
+      if (payosFailing && req.url === '/v2/payment-requests') {
+        res.statusCode = 500;
+        return res.end(JSON.stringify({ code: '20', desc: 'payOS tạm lỗi' }));
+      }
+      res.end(JSON.stringify({
+        code: '00', desc: 'success',
+        data: {
+          bin: '970422', accountNumber: '0123456789', accountName: 'NET STORE', amount: body.amount,
+          description: body.description, orderCode: body.orderCode, currency: 'VND',
+          paymentLinkId: `link-${body.orderCode}`, status: 'PENDING', checkoutUrl: `https://pay.payos.vn/web/link-${body.orderCode}`,
+          qrCode: '000201...',
+        },
+      }));
+    });
+  });
+  await new Promise((resolve) => fakePayos.listen(PAYOS_PORT, '127.0.0.1', resolve));
   server = spawn(process.execPath, [path.join(root, 'backend', 'server.js')], {
     env: {
       ...process.env,
+      ...PAYOS_KEYS,
+      PAYOS_API_BASE: `http://127.0.0.1:${PAYOS_PORT}`,
+      PUBLIC_BASE_URL: 'https://shop.test',
       PORT: String(PORT),
       DB_PATH: path.join(tmpDir, 'test.sqlite'),
       ADMIN_USERNAME: ADMIN.username,
@@ -94,6 +130,7 @@ after(async () => {
     server.kill();
     await exited; // Windows giữ khóa file SQLite đến khi tiến trình thoát hẳn
   }
+  if (fakePayos) await new Promise((resolve) => fakePayos.close(resolve));
   rmSync(tmpDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
 });
 
@@ -271,4 +308,171 @@ test('tài khoản nhận tiền: có thể chỉ dùng ảnh QR (để trống 
   assert.equal(cleared.status, 200);
   assert.equal(cleared.data.config.hasBankInfo, false);
   assert.equal(cleared.data.config.configured, true);
+});
+
+// ---------------------------------------------------------------- payOS: thanh toán QR tự động
+
+const signedWebhook = (data, overrides = {}) => ({
+  code: '00', desc: 'success', success: true, data, signature: signWebhookData(data, PAYOS_KEYS.PAYOS_CHECKSUM_KEY), ...overrides,
+});
+const webhookData = (order, extra = {}) => ({
+  orderCode: Number(order.orderId.replace(/\D/g, '')), amount: order.total, description: `N${order.orderId.replace(/\D/g, '')}`,
+  accountNumber: '0123456789', reference: 'FT-TEST-1', transactionDateTime: '2026-11-27 10:00:00', currency: 'VND',
+  paymentLinkId: `link-${order.orderId.replace(/\D/g, '')}`, code: '00', desc: 'success', counterAccountBankId: '', counterAccountName: null, ...extra,
+});
+
+test('payOS: đơn VietQR tự tạo link, gửi đúng chữ ký và lưu tài khoản nhận tiền riêng cho đơn', async () => {
+  const order = await createVietQrOrder();
+  const orderCode = Number(order.orderId.replace(/\D/g, ''));
+  assert.equal(order.payos.accountNumber, '0123456789');
+  assert.equal(order.payos.description, `N${orderCode}`);
+  const sent = payosRequests.find((r) => r.body.orderCode === orderCode);
+  assert.equal(sent.url, '/v2/payment-requests');
+  assert.equal(sent.headers['x-client-id'], PAYOS_KEYS.PAYOS_CLIENT_ID);
+  assert.equal(sent.headers['x-api-key'], PAYOS_KEYS.PAYOS_API_KEY);
+  assert.equal(sent.body.amount, order.total);
+  assert.equal(sent.body.signature, signPaymentRequest(sent.body, PAYOS_KEYS.PAYOS_CHECKSUM_KEY));
+});
+
+test('payOS webhook: sai chữ ký bị từ chối, đơn chưa được đánh dấu đã thanh toán', async () => {
+  const order = await createVietQrOrder();
+  const forged = signedWebhook(webhookData(order), { signature: 'f'.repeat(64) });
+  assert.equal((await call('POST', '/payment/payos-webhook', { body: forged })).status, 401);
+  assert.equal((await call('POST', '/payment/payos-webhook', { body: { success: true } })).status, 401);
+  assert.equal((await call('GET', `/payment/status/${order.orderId}`)).data.paid, false);
+});
+
+test('payOS webhook: đúng chữ ký và đủ tiền thì đơn tự chuyển sang đã thanh toán; gửi lại không đổi gì', async () => {
+  const order = await createVietQrOrder();
+  const hook = signedWebhook(webhookData(order));
+  assert.equal((await call('POST', '/payment/payos-webhook', { body: hook })).status, 200);
+  const status = (await call('GET', `/payment/status/${order.orderId}`)).data;
+  assert.equal(status.paid, true);
+  assert.equal(status.status, 'Đang xử lý');
+  const detail = (await call('GET', `/orders/${order.orderId}`, { token: adminToken })).data;
+  assert.equal(detail.bankTransactionId, 'PAYOS-FT-TEST-1');
+  const firstPaidAt = detail.paidAt;
+  assert.equal((await call('POST', '/payment/payos-webhook', { body: hook })).status, 200);
+  assert.equal((await call('GET', `/orders/${order.orderId}`, { token: adminToken })).data.paidAt, firstPaidAt);
+});
+
+test('payOS webhook: sai số tiền hoặc giao dịch thất bại không đánh dấu đã thanh toán', async () => {
+  const wrongAmount = await createVietQrOrder();
+  const res = await call('POST', '/payment/payos-webhook', { body: signedWebhook(webhookData(wrongAmount, { amount: 1000 })) });
+  assert.equal(res.status, 200);
+  assert.equal((await call('GET', `/payment/status/${wrongAmount.orderId}`)).data.paid, false);
+
+  const failed = await createVietQrOrder();
+  await call('POST', '/payment/payos-webhook', { body: signedWebhook(webhookData(failed, { code: '01' })) });
+  assert.equal((await call('GET', `/payment/status/${failed.orderId}`)).data.paid, false);
+});
+
+test('payOS webhook: giao dịch mẫu khi xác nhận URL (đơn không tồn tại) vẫn trả 200', async () => {
+  const sample = { orderCode: 123, amount: 3000, description: 'VQRIO123', reference: 'TF230204212323', currency: 'VND', paymentLinkId: 'abc', code: '00', desc: 'success' };
+  assert.equal((await call('POST', '/payment/payos-webhook', { body: signedWebhook(sample) })).status, 200);
+});
+
+test('payOS: chỉ admin được đăng ký webhook, và luôn dùng PUBLIC_BASE_URL (bỏ qua URL khách/admin gửi lên)', async () => {
+  assert.equal((await call('POST', '/payment/payos/confirm-webhook', { body: {} })).status, 401);
+  const ok = await call('POST', '/payment/payos/confirm-webhook', { token: adminToken, body: { webhookUrl: 'https://evil.test/hook' } });
+  assert.equal(ok.status, 200);
+  const sent = payosRequests.find((r) => r.url === '/confirm-webhook');
+  assert.equal(sent.body.webhookUrl, 'https://shop.test/api/payment/payos-webhook');
+});
+
+test('chữ ký payOS khớp công thức trong tài liệu (tính độc lập, không dùng hàm của server)', () => {
+  const hmac = (text) => createHmac('sha256', 'k').update(text).digest('hex');
+  const data = { orderCode: 123, amount: 3000, description: 'VQRIO123', counterAccountName: null };
+  assert.equal(signWebhookData(data, 'k'), hmac('amount=3000&counterAccountName=&description=VQRIO123&orderCode=123'));
+  const request = { amount: 3000, cancelUrl: 'https://a.test/c', description: 'N1', orderCode: 1, returnUrl: 'https://a.test/r' };
+  assert.equal(signPaymentRequest(request, 'k'), hmac('amount=3000&cancelUrl=https://a.test/c&description=N1&orderCode=1&returnUrl=https://a.test/r'));
+});
+
+test('payOS lỗi khi tạo link: đơn vẫn được tạo và quay về QR thủ công', async () => {
+  payosFailing = true;
+  try {
+    const order = await createVietQrOrder();
+    assert.equal(order.payos, null);
+    assert.equal(order.isPaid, false);
+  } finally {
+    payosFailing = false;
+  }
+});
+
+test('payOS webhook: link khác, sai số tiền, trả thừa đều không tự thanh toán và được gắn cảnh báo đối soát', async () => {
+  const adminView = async (order) => (await call('GET', `/orders/${order.orderId}`, { token: adminToken })).data;
+
+  const otherLink = await createVietQrOrder();
+  await call('POST', '/payment/payos-webhook', { body: signedWebhook(webhookData(otherLink, { paymentLinkId: 'link-khac' })) });
+  const otherLinkView = await adminView(otherLink);
+  assert.equal(otherLinkView.isPaid, false);
+  assert.match(otherLinkView.payosWarning, /link thanh toán khác/);
+
+  const wrongAmount = await createVietQrOrder();
+  await call('POST', '/payment/payos-webhook', { body: signedWebhook(webhookData(wrongAmount, { amount: 1000 })) });
+  assert.match((await adminView(wrongAmount)).payosWarning, /Nhận 1000đ/);
+
+  const overpaid = await createVietQrOrder();
+  await call('POST', '/payment/payos-webhook', { body: signedWebhook(webhookData(overpaid)) });
+  await call('POST', '/payment/payos-webhook', { body: signedWebhook(webhookData(overpaid)) });
+  assert.equal((await adminView(overpaid)).payosWarning, '', 'gửi lại cùng giao dịch không phải trả thừa');
+  await call('POST', '/payment/payos-webhook', { body: signedWebhook(webhookData(overpaid, { reference: 'FT-TEST-2' })) });
+  assert.match((await adminView(overpaid)).payosWarning, /đã thanh toán/);
+});
+
+test('hủy đơn hoặc xóa đơn chưa thanh toán thì hủy luôn link payOS', async () => {
+  const cancelRequestsFor = (order) => payosRequests.filter((r) => r.url === `/v2/payment-requests/${order.orderId.replace(/\D/g, '')}/cancel`);
+  const waitForCancel = async (order) => {
+    for (let i = 0; i < 20 && cancelRequestsFor(order).length === 0; i += 1) await new Promise((r) => setTimeout(r, 100));
+    return cancelRequestsFor(order);
+  };
+
+  const cancelled = await createVietQrOrder();
+  await call('PUT', `/orders/${cancelled.orderId}/status`, { token: adminToken, body: { status: 'Đã hủy' } });
+  assert.equal((await waitForCancel(cancelled)).length, 1);
+
+  const deleted = await createVietQrOrder();
+  await call('DELETE', `/orders/${deleted.orderId}`, { token: adminToken });
+  assert.equal((await waitForCancel(deleted)).length, 1);
+});
+
+test('payOS webhook: body quá lớn bị từ chối trước khi xử lý', async () => {
+  const res = await fetch(`${BASE}/payment/payos-webhook`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ filler: 'x'.repeat(20_000) }),
+  });
+  assert.ok(res.status >= 400, `nhận ${res.status}`);
+});
+
+test('không cấu hình payOS: payosEnabled=false và webhook trả 503 (luồng QR thủ công là mặc định)', async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'net-nopayos-'));
+  copyFileSync(path.join(root, 'backend', 'seed.sqlite'), path.join(dir, 'test.sqlite'));
+  const port = 5057;
+  const proc = spawn(process.execPath, [path.join(root, 'backend', 'server.js')], {
+    env: {
+      ...process.env,
+      PAYOS_CLIENT_ID: '', PAYOS_API_KEY: '', PAYOS_CHECKSUM_KEY: '',
+      PORT: String(port), DB_PATH: path.join(dir, 'test.sqlite'),
+      ADMIN_USERNAME: ADMIN.username, ADMIN_PASSWORD: ADMIN.password, ADMIN_TOKEN_SECRET: 'test-secret',
+    },
+    stdio: 'ignore',
+  });
+  try {
+    const base = `http://127.0.0.1:${port}/api`;
+    for (let i = 0; i < 50; i += 1) {
+      try { if ((await fetch(`${base}/health`)).ok) break; } catch { /* server chưa sẵn sàng */ }
+      await new Promise((r) => setTimeout(r, 200));
+    }
+    assert.equal((await (await fetch(`${base}/payment/config`)).json()).payosEnabled, false);
+    const hook = await fetch(`${base}/payment/payos-webhook`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(signedWebhook({ orderCode: 1 })),
+    });
+    assert.equal(hook.status, 503);
+  } finally {
+    const exited = new Promise((resolve) => proc.once('exit', resolve));
+    proc.kill();
+    await exited;
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+  }
 });

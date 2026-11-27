@@ -216,6 +216,10 @@ export function formatOrder(row) {
     isPaid: Boolean(row.da_thanh_toan),
     paidAt: row.thoi_gian_thanh_toan || null,
     bankTransactionId: row.ma_giao_dich_ngan_hang || '',
+    // Tài khoản nhận tiền + nội dung chuyển khoản do payOS cấp riêng cho đơn (null nếu đơn dùng QR thủ công)
+    payos: safeJsonParse(row.payos_thong_tin, null),
+    // Giao dịch payOS bất thường cần admin đối soát (sai số tiền, trả lại...); rỗng nếu không có
+    payosWarning: row.payos_canh_bao || '',
   };
 }
 
@@ -231,6 +235,8 @@ try {
   addColumnIfMissing('don_hang', 'da_thanh_toan', 'INTEGER DEFAULT 0');
   addColumnIfMissing('don_hang', 'thoi_gian_thanh_toan', 'TEXT');
   addColumnIfMissing('don_hang', 'ma_giao_dich_ngan_hang', 'TEXT');
+  addColumnIfMissing('don_hang', 'payos_thong_tin', 'TEXT');
+  addColumnIfMissing('don_hang', 'payos_canh_bao', 'TEXT');
 } catch (e) {
   console.warn('[DB Migration Notice]', e.message);
 }

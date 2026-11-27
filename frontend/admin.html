@@ -2521,8 +2521,12 @@ function PaymentsPanel({ orders, onOrdersChanged }) {
   const [saving, setSaving] = useState(false);
   const [pwForm, setPwForm] = useState({ currentPassword: "", newPassword: "" });
   const [pwMessage, setPwMessage] = useState(null);
+  const [payosEnabled, setPayosEnabled] = useState(false);
+  const [payosMessage, setPayosMessage] = useState(null);
+  const [payosBusy, setPayosBusy] = useState(false);
 
   const applyConfig = (c) => {
+    setPayosEnabled(Boolean(c.payosEnabled));
     setForm({ bankId: c.bankId || "", accountNo: c.accountNo || "", accountName: c.accountName || "" });
     setQrState({ hasQrImage: Boolean(c.hasQrImage), qrImageVersion: c.qrImageVersion || "" });
   };
@@ -2598,6 +2602,29 @@ function PaymentsPanel({ orders, onOrdersChanged }) {
     if (res.ok) {
       applyConfig(data.config);
       setQrMessage({ type: "ok", text: "Đã gỡ ảnh mã QR." });
+    }
+  };
+
+  const handleRegisterPayosWebhook = async () => {
+    if (!confirm("Đăng ký địa chỉ webhook của cửa hàng này với payOS? payOS sẽ gửi một giao dịch mẫu để kiểm tra.")) return;
+    setPayosBusy(true);
+    setPayosMessage(null);
+    try {
+      const res = await adminFetch(ADMIN_API_BASE + "/payment/payos/confirm-webhook", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        setPayosMessage({ type: "ok", text: "Đã đăng ký webhook: " + data.webhookUrl });
+      } else {
+        setPayosMessage({ type: "error", text: data.message || "Đăng ký webhook thất bại." });
+      }
+    } catch (err) {
+      setPayosMessage({ type: "error", text: "Không kết nối được máy chủ." });
+    } finally {
+      setPayosBusy(false);
     }
   };
 
@@ -2710,6 +2737,22 @@ function PaymentsPanel({ orders, onOrdersChanged }) {
         </div>
       </div>
 
+      <div className="bg-white rounded-2xl border border-[#E5E8EC] p-6 shadow-2xs space-y-3 text-xs">
+        <div>
+          <h3 className="font-extrabold text-sm text-[#141923]">payOS - thanh toán QR tự động</h3>
+          <p className="text-[#707783]">
+            {payosEnabled
+              ? "Đã cấu hình khóa payOS trên máy chủ. Bấm nút bên dưới một lần sau khi deploy (hoặc khi đổi địa chỉ cửa hàng) để payOS biết nơi gửi thông báo khi khách chuyển khoản."
+              : "Chưa cấu hình khóa payOS trên máy chủ (PAYOS_CLIENT_ID, PAYOS_API_KEY, PAYOS_CHECKSUM_KEY). Cửa hàng đang dùng QR thủ công ở trên."}
+          </p>
+        </div>
+        <button type="button" onClick={handleRegisterPayosWebhook} disabled={!payosEnabled || payosBusy}
+          className="px-5 py-2.5 rounded-xl bg-[#0275A9] hover:bg-[#02628e] disabled:opacity-60 text-xs font-bold text-white transition cursor-pointer">
+          {payosBusy ? "Đang đăng ký..." : "Đăng ký webhook payOS"}
+        </button>
+        {payosMessage && <div className={"border rounded-lg px-3 py-2 " + messageClass(payosMessage)}>{payosMessage.text}</div>}
+      </div>
+
       <div className="bg-white rounded-2xl border border-[#E5E8EC] p-6 shadow-2xs space-y-3">
         <h3 className="font-extrabold text-sm text-[#141923]">3. Đơn chờ thanh toán chuyển khoản ({pendingOrders.length})</h3>
         <p className="text-xs text-[#707783]">Kiểm tra sao kê ngân hàng, thấy khách đã chuyển đúng số tiền và nội dung thì bấm xác nhận.</p>
@@ -2722,6 +2765,7 @@ function PaymentsPanel({ orders, onOrdersChanged }) {
                 <div>
                   <span className="font-black text-[#0275A9]">#{o.orderId}</span>
                   <span className="text-[#707783]"> · {o.customerName} · {formatDate(o.createdAt)}</span>
+                  {o.payosWarning && <div className="text-rose-600 font-bold mt-0.5">Cần đối soát: {o.payosWarning}</div>}
                 </div>
                 <div className="flex items-center gap-3">
                   <span className="font-bold text-[#141923]">{formatVND(o.total)}</span>
